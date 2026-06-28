@@ -12,10 +12,9 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         prompt,
-        model: 'suno',
-        sunoParams: {
-          instrumental: true,
-          model_version: 'V4_5PLUS',
+        model: 'elevenlabs-music',
+        elevenlabsMusicParams: {
+          duration: 10,
         },
       }),
     })
@@ -30,9 +29,8 @@ export async function POST(req: NextRequest) {
         headers: { 'X-API-Key': process.env.APIFRAME_KEY! },
       })
       const pollData = await poll.json()
-
       if (pollData.status === 'COMPLETED') {
-        const audioUrl = pollData.result?.tracks?.[0]?.audioUrl
+        const audioUrl = pollData.result?.audioUrl
         if (!audioUrl) throw new Error('No audioUrl: ' + JSON.stringify(pollData))
         return NextResponse.json({ audioUrl })
       }
