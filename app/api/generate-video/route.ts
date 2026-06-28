@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
           prompt: beatAwarePrompt,
           generation_type: 'reference-to-video',
           image_urls: [imageUrl],
-          duration: 4,
+          duration: 5,
           resolution: '480p',
           watermark: false,
           generate_audio: true,
