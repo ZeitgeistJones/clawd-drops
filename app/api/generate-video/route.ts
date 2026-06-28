@@ -5,7 +5,7 @@ export const maxDuration = 60
 export async function POST(req: NextRequest) {
   try {
     const { prompt, imageUrl, beat } = await req.json()
-    const safeBeat = beat || { drop: 3, peak: 4.5 }
+    const safeBeat = beat || { drop: 2.0, peak: 3.5 }
 
     const beatAwarePrompt = `${prompt} @Image1 is the character reference. Slow build for first ${Math.round(safeBeat.drop - 1)} seconds, explosive peak action at second ${safeBeat.peak}.`
 
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
           prompt: beatAwarePrompt,
           generation_type: 'reference-to-video',
           image_urls: [imageUrl],
-          duration: 5,
+          duration: 4,
           resolution: '480p',
           watermark: false,
           generate_audio: true,
