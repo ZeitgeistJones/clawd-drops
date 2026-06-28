@@ -9,13 +9,14 @@ export async function POST(req: NextRequest) {
     })
     const data = await poll.json()
 
-    if (data.status === 'completed') {
-      const videoUrl = data.data?.results?.[0]
-      if (!videoUrl) throw new Error('No video URL: ' + JSON.stringify(data))
+    const status = data.status || data.data?.status
+    const videoUrl = data.data?.results?.[0] || data.results?.[0]
+
+    if (status === 'completed' && videoUrl) {
       return NextResponse.json({ status: 'completed', videoUrl })
     }
-    if (data.status === 'failed') throw new Error('Seedance failed: ' + data.failed_reason)
-    return NextResponse.json({ status: data.status })
+    if (status === 'failed') throw new Error('Seedance failed: ' + JSON.stringify(data))
+    return NextResponse.json({ status: status || 'processing' })
 
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
