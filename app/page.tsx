@@ -97,12 +97,10 @@ export default function Home() {
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
 
       // STEP 3: Music (AUTO MODE only)
-      let musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
+      const musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
       if (mode === 'auto') {
         setStage(STAGES.GENERATING_MUSIC)
         addLog('Cooking the beat...')
-        // Suno via Apiframe when credits available
-        // const musicRes = await fetch('/api/generate-music', ...)
         addLog('Beat dropped.')
       }
 
@@ -112,53 +110,38 @@ export default function Home() {
       const audioData = { bpm: 128, drop: 2.0, peak: 3.5, energy: 'high' }
       setBeatData(audioData)
       addLog(`BPM: ${audioData.bpm} | Drop: ${audioData.drop}s | Peak: ${audioData.peak}s`)
-// STEP: Style character
+
+      // STEP: Style character
       addLog('Applying art style to character...')
       const styleRes = await fetch('/api/style-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageUrl: finalImageUrl,
-          style: promptData.style || 'dark noir comic book style, sharp ink lines, dramatic shadows',
+          style: promptData.style || 'sharp anime style, high contrast, dramatic lighting',
         }),
       })
       const styleData = await styleRes.json()
       const styledImageUrl = styleData.error ? finalImageUrl : styleData.imageUrl
       addLog(styleData.error ? 'Style step skipped — using original.' : 'Character styled.')
+
       // STEP 5: Generate video
       setStage(STAGES.GENERATING_VIDEO)
-      addLog('Seedance generating video...')
+      addLog('Generating clip 1 — the build...')
+      addLog('Generating clip 2 — the drop...')
       const videoRes = await fetch('/api/generate-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: promptData.seedance,
+          prompt1: promptData.seedance1,
+          prompt2: promptData.seedance2,
           imageUrl: styledImageUrl,
           beat: audioData,
         }),
       })
-      const videoJobData = await videoRes.json()
-      if (videoJobData.error) throw new Error(videoJobData.error)
-      addLog('Seedance task submitted. Polling...')
-
-      let rawVideoUrl = null
-      for (let i = 0; i < 40; i++) {
-        await new Promise(r => setTimeout(r, 10000))
-        const pollRes = await fetch('/api/poll-video', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ taskId: videoJobData.taskId }),
-        })
-        const pollData = await pollRes.json()
-        addLog(`Video status: ${pollData.status}...`)
-        if (pollData.status === 'completed') {
-          rawVideoUrl = pollData.videoUrl
-          break
-        }
-        if (pollData.error) throw new Error(pollData.error)
-      }
-      if (!rawVideoUrl) throw new Error('Video generation timed out')
-      addLog('Raw video ready.')
+      const videoData = await videoRes.json()
+      if (videoData.error) throw new Error(videoData.error)
+      addLog('Both clips ready.')
 
       // STEP 6: Manus sync
       setStage(STAGES.SYNCING)
@@ -167,7 +150,8 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          videoUrl: rawVideoUrl,
+          videoUrl1: videoData.videoUrl1,
+          videoUrl2: videoData.videoUrl2,
           audioUrl: musicData.audioUrl,
           beat: audioData,
           mode,
@@ -255,7 +239,6 @@ export default function Home() {
           background: '#111118', border: `1px solid ${isRunning ? '#ff3c3c33' : '#222'}`,
           borderRadius: 4, overflow: 'hidden',
         }}>
-          {/* Goal */}
           <textarea
             value={goal} onChange={e => setGoal(e.target.value)}
             disabled={isRunning}
@@ -269,10 +252,8 @@ export default function Home() {
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runPipeline() }}
           />
 
-          {/* Divider */}
           <div style={{ height: 1, background: '#1a1a1a' }} />
 
-          {/* Image upload */}
           <div
             ref={dropRef}
             onDrop={handleDrop}
@@ -302,7 +283,6 @@ export default function Home() {
               onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f) }} />
           </div>
 
-          {/* Song Mode fields */}
           {mode === 'song' && (
             <>
               <div style={{ height: 1, background: '#1a1a1a' }} />
@@ -330,7 +310,6 @@ export default function Home() {
             </>
           )}
 
-          {/* Footer */}
           <div style={{ height: 1, background: '#1a1a1a' }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px 12px' }}>
             <span style={{ fontSize: 11, color: '#333', letterSpacing: '0.1em' }}>⌘ + ENTER TO RUN</span>
@@ -396,7 +375,11 @@ export default function Home() {
       {/* Prompts */}
       {prompts && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 24, display: 'grid', gridTemplateColumns: mode === 'auto' ? '1fr 1fr 1fr' : '1fr 1fr', gap: 8 }}>
-          {[{ key: 'seedance', label: 'SCENE', icon: '◉' }, ...(mode === 'auto' ? [{ key: 'suno', label: 'BEAT', icon: '♪' }] : [])].map(({ key, label, icon }) => (
+          {[
+            { key: 'seedance1', label: 'BUILD', icon: '◉' },
+            { key: 'seedance2', label: 'DROP', icon: '▼' },
+            ...(mode === 'auto' ? [{ key: 'suno', label: 'BEAT', icon: '♪' }] : [])
+          ].map(({ key, label, icon }) => (
             <div key={key} style={{ background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4, padding: 12 }}>
               <div style={{ fontSize: 9, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 8 }}>{icon} {label}</div>
               <div style={{ fontSize: 11, color: '#444', lineHeight: 1.6 }}>{prompts[key]?.slice(0, 120)}{prompts[key]?.length > 120 ? '...' : ''}</div>
