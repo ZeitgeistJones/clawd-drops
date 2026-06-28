@@ -1,49 +1,82 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export const maxDuration = 60
+const MANUS_BASE = 'https://api.manus.ai'
 
 export async function POST(req: NextRequest) {
+  let rawVideoUrl = null
   try {
-    const { prompt, imageUrl, beat } = await req.json()
-    const safeBeat = beat || { drop: 3, peak: 4.5 }
-    const beatAwarePrompt = `${prompt} Slow build for first ${Math.round(safeBeat.drop - 1)} seconds, explosive peak action at second ${safeBeat.peak}.`
+    const { videoUrl, audioUrl, beat } = await req.json()
+    rawVideoUrl = videoUrl
 
-    const formData = new URLSearchParams()
-    formData.append('model', 'ltx-video-2.3')
-    formData.append('first_frame_image', imageUrl)
-    formData.append('prompt', beatAwarePrompt)
-    formData.append('frames', '120')
-    formData.append('fps', '24')
-    formData.append('width', '848')
-    formData.append('height', '480')
+    const content = `Sync this video to this audio with frame-perfect timing. Video: ${videoUrl} Audio: ${audioUrl} Peak moment should land at ${beat?.peak || 5}s. Download both files, sync them, export as MP4, return only the final URL.`
 
-    const res = await fetch('https://api.deapi.ai/api/v1/client/img2video', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.DEAPI_KEY}`,
-      },
-      body: formData,
+    const requestBody = JSON.stringify({
+      message: { content }
     })
 
-    const data = await res.json()
-    if (!data.id) throw new Error('No job ID: ' + JSON.stringify(data))
+    console.log('Manus request body:', requestBody)
 
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 3000))
-      const poll = await fetch(`https://api.deapi.ai/api/v1/client/img2video/${data.id}`, {
-        headers: { 'Authorization': `Bearer ${process.env.DEAPI_KEY}` },
+    const taskRes = await fetch(`${MANUS_BASE}/v2/task.create`, {
+      method: 'POST',
+      headers: {
+        'x-manus-api-key': process.env.MANUS_API_KEY!,
+        'Content-Type': 'application/json',
+      },
+      body: requestBody,
+    })
+
+    const taskData = await taskRes.json()
+    if (!taskData.ok) throw new Error('Manus task creation failed: ' + JSON.stringify(taskData))
+    const taskId = taskData.task_id
+
+    let finalVideoUrl = videoUrl
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 5000))
+      const pollRes = await fetch(`${MANUS_BASE}/v2/task.listMessages?task_id=${taskId}&order=desc&limit=10`, {
+        headers: { 'x-manus-api-key': process.env.MANUS_API_KEY! },
       })
-      const pollData = await poll.json()
-      if (pollData.status === 'completed') {
-        const videoUrl = pollData.video_url
-        if (!videoUrl) throw new Error('No video URL: ' + JSON.stringify(pollData))
-        return NextResponse.json({ videoUrl })
+      const pollData = await pollRes.json()
+      const messages = pollData.messages || []
+      const statusEvent = messages.find((m: any) => m.type === 'status_update')
+      const agentStatus = statusEvent?.status_update?.agent_status
+
+      if (agentStatus === 'waiting') {
+        const detail = statusEvent?.status_update?.status_detail
+        const eventType = detail?.waiting_for_event_type
+        const eventId = detail?.waiting_for_event_id
+        if (eventType === 'videoGenerate') {
+          await fetch(`${MANUS_BASE}/v2/task.confirmAction`, {
+            method: 'POST',
+            headers: { 'x-manus-api-key': process.env.MANUS_API_KEY!, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskId, event_id: eventId, input: { choice: 'standard' } }),
+          })
+        } else if (eventType === 'apiHighCreditNotice') {
+          await fetch(`${MANUS_BASE}/v2/task.confirmAction`, {
+            method: 'POST',
+            headers: { 'x-manus-api-key': process.env.MANUS_API_KEY!, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskId, event_id: eventId, input: { action: 'accept' } }),
+          })
+        } else if (eventType === 'terminalExecute') {
+          await fetch(`${MANUS_BASE}/v2/task.confirmAction`, {
+            method: 'POST',
+            headers: { 'x-manus-api-key': process.env.MANUS_API_KEY!, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskId, event_id: eventId, input: { accept: true, always_allow: true } }),
+          })
+        }
       }
-      if (pollData.status === 'failed') throw new Error('deAPI failed: ' + JSON.stringify(pollData))
+
+      if (agentStatus === 'stopped') {
+        const assistantMsg = messages.find((m: any) => m.type === 'assistant_message')
+        const content = assistantMsg?.assistant_message?.content || ''
+        const urlMatch = content.match(/https?:\/\/\S+\.mp4/i)
+        if (urlMatch) finalVideoUrl = urlMatch[0]
+        break
+      }
+      if (agentStatus === 'error') break
     }
 
-    throw new Error('Video generation timed out')
+    return NextResponse.json({ videoUrl: finalVideoUrl })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    return NextResponse.json({ videoUrl: rawVideoUrl, error: err.message })
   }
 }
