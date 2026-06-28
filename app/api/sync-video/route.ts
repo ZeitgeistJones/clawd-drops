@@ -63,15 +63,15 @@ export async function POST(req: NextRequest) {
   let rawVideoUrl = null
   try {
     const body = await req.json()
-    const { videoUrl, mode, songName, moment } = body
-    rawVideoUrl = videoUrl
+    const { videoUrl1, videoUrl2, mode, songName, moment, beat } = body
+    rawVideoUrl = videoUrl1
 
     let content = ''
 
     if (mode === 'song') {
-      content = '/video-sync Here is the video to sync: ' + videoUrl + '. Find the song "' + songName + '" on SoundCloud and download the audio. Locate the moment described as "' + moment + '". Sync the video so the peak visual moment lands exactly on that audio moment. Return only the final MP4 URL.'
+      content = '/video-sync Here are two video clips to edit together: Clip 1 (the build): ' + videoUrl1 + ' Clip 2 (the drop): ' + videoUrl2 + '. Find the song "' + songName + '" on SoundCloud and download the audio. Locate the moment described as "' + moment + '". Cut from clip 1 to clip 2 exactly at that moment. Sync so the cut lands on the beat. Export as MP4 and return only the final URL.'
     } else {
-      content = 'You are a video quality reviewer. Watch this video: ' + videoUrl + '. Check if the audio and visual sync feels natural and polished. If it looks and sounds great as-is, return the original URL unchanged: ' + videoUrl + '. Only make edits if you see a genuine specific improvement — like a cut that feels off or audio that is clearly out of sync. If you do edit it, return the new MP4 URL. Return only the URL, nothing else.'
+      content = '/video-sync Here are two video clips: Clip 1 (the build): ' + videoUrl1 + ' Clip 2 (the drop): ' + videoUrl2 + '. Cut from clip 1 to clip 2 at the most impactful moment around second ' + (beat?.drop || 2) + '. Review the final edit — if it looks and sounds polished return the URL, if not make targeted improvements. Return only the final MP4 URL.'
     }
 
     const finalVideoUrl = await runManusTask(content, rawVideoUrl)
