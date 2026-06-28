@@ -2,31 +2,47 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, imageUrl, beat } = await req.json()
+    const { prompt } = await req.json()
 
-    const beatAwarePrompt = `${prompt} @Image1 is the character reference. Slow build for first ${Math.round(beat.drop - 1)} seconds, explosive peak action at second ${beat.peak}.`
-
-    const res = await fetch('https://fal.run/bytedance/seedance-2.0/reference-to-video', {
+    // GoAPI Suno - submit generation
+    const res = await fetch('https://api.goapi.ai/api/suno/v1/music', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Key ${process.env.FAL_API_KEY}`,
+        'X-API-Key': process.env.GOAPI_KEY!,
       },
       body: JSON.stringify({
-        prompt: beatAwarePrompt,
-        image_urls: [imageUrl],
-        duration: '5',
-        resolution: '480p',
-        aspect_ratio: '16:9',
-        generate_audio: true,
+        custom_mode: false,
+        mv: 'chirp-v3-5',
+        input: {
+          gpt_description_prompt: prompt,
+          make_instrumental: true,
+          duration: 8,
+        },
       }),
     })
 
     const data = await res.json()
-    const videoUrl = data.video?.url
-    if (!videoUrl) throw new Error('Fal returned no video: ' + JSON.stringify(data))
-    return NextResponse.json({ videoUrl })
+    if (data.code !== 200) throw new Error('GoAPI error: ' + JSON.stringify(data))
+    const taskId = data.data?.task_id
+    if (!taskId) throw new Error('No task ID from GoAPI')
 
+    // Poll until complete
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 5000))
+      const poll = await fetch(`https://api.goapi.ai/api/suno/v1/music/${taskId}`, {
+        headers: { 'X-API-Key': process.env.GOAPI_KEY! },
+      })
+      const pollData = await poll.json()
+      if (pollData.data?.status === 'complete') {
+        const audioUrl = pollData.data?.clips?.[0]?.audio_url
+        if (!audioUrl) throw new Error('No audio URL in response')
+        return NextResponse.json({ audioUrl })
+      }
+      if (pollData.data?.status === 'error') throw new Error('Suno generation failed')
+    }
+
+    throw new Error('Suno timed out')
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

@@ -1,34 +1,26 @@
-// v2 - replicate
 import { NextRequest, NextResponse } from 'next/server'
-
-const CLAWD_REFERENCE = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.jpg'
 
 export async function POST(req: NextRequest) {
   try {
     const { prompt } = await req.json()
 
-    const res = await fetch('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
+    const res = await fetch('https://fal.run/fal-ai/flux/schnell', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.REPLICATE_API_KEY}`,
         'Content-Type': 'application/json',
-        'Prefer': 'wait',
+        'Authorization': `Key ${process.env.FAL_API_KEY}`,
       },
       body: JSON.stringify({
-        input: {
-          prompt: `${prompt}, same character as reference, red pyramid head, smug expression`,
-          go_fast: true,
-          num_outputs: 1,
-          aspect_ratio: '1:1',
-          output_format: 'webp',
-          num_inference_steps: 4,
-        },
+        prompt,
+        image_size: 'square_hd',
+        num_inference_steps: 4,
+        num_images: 1,
       }),
     })
 
     const data = await res.json()
-    const imageUrl = data.output?.[0]
-    if (!imageUrl) throw new Error('Replicate returned no image: ' + JSON.stringify(data))
+    const imageUrl = data.images?.[0]?.url
+    if (!imageUrl) throw new Error('Flux returned no image: ' + JSON.stringify(data))
 
     return NextResponse.json({ imageUrl })
   } catch (err: any) {
