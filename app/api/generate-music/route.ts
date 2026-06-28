@@ -15,32 +15,28 @@ export async function POST(req: NextRequest) {
         model: 'suno',
         sunoParams: {
           instrumental: true,
+          model_version: 'V4_5PLUS',
         },
       }),
     })
 
-    const raw = await res.text()
-    let data
-    try { data = JSON.parse(raw) } catch { throw new Error('Apiframe bad response: ' + raw.slice(0, 300)) }
-
+    const data = await res.json()
     const jobId = data.jobId
     if (!jobId) throw new Error('No jobId: ' + JSON.stringify(data))
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 36; i++) {
       await new Promise(r => setTimeout(r, 5000))
       const poll = await fetch(`https://api.apiframe.ai/v2/jobs/${jobId}`, {
         headers: { 'X-API-Key': process.env.APIFRAME_KEY! },
       })
-      const pollRaw = await poll.text()
-      let pollData
-      try { pollData = JSON.parse(pollRaw) } catch { continue }
+      const pollData = await poll.json()
 
-      if (pollData.status === 'done') {
-        const audioUrl = pollData.result?.songs?.[0]?.audio_url || pollData.result?.audio_url
-        if (!audioUrl) throw new Error('No audio URL: ' + JSON.stringify(pollData))
+      if (pollData.status === 'COMPLETED') {
+        const audioUrl = pollData.result?.tracks?.[0]?.audioUrl
+        if (!audioUrl) throw new Error('No audioUrl: ' + JSON.stringify(pollData))
         return NextResponse.json({ audioUrl })
       }
-      if (pollData.status === 'failed') throw new Error('Music gen failed: ' + JSON.stringify(pollData))
+      if (pollData.status === 'FAILED') throw new Error('Music failed: ' + JSON.stringify(pollData))
     }
 
     throw new Error('Music generation timed out')
