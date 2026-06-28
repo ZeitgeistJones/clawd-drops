@@ -1,3 +1,5 @@
+export const maxDuration = 60
+
 import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(req: NextRequest) {
@@ -7,7 +9,6 @@ export async function POST(req: NextRequest) {
 
     const beatAwarePrompt = `${prompt} Slow build for first ${Math.round(safeBeat.drop - 1)} seconds, explosive peak action at second ${safeBeat.peak}.`
 
-    // Submit job
     const res = await fetch('https://api.magichour.ai/v1/image-to-video', {
       method: 'POST',
       headers: {
@@ -27,9 +28,8 @@ export async function POST(req: NextRequest) {
     const data = await res.json()
     if (!data.id) throw new Error('No job ID: ' + JSON.stringify(data))
 
-    // Poll until complete
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 5000))
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 3000))
       const poll = await fetch(`https://api.magichour.ai/v1/image-to-video/${data.id}`, {
         headers: { 'Authorization': `Bearer ${process.env.MAGIC_HOUR_KEY}` },
       })
