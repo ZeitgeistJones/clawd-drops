@@ -4,19 +4,16 @@ export async function POST(req: NextRequest) {
   try {
     const { prompt } = await req.json()
 
-    const res = await fetch('https://api.goapi.ai/api/suno/v1/music', {
+    const res = await fetch('https://api.apiframe.pro/suno-create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': process.env.GOAPI_KEY!,
+        'Authorization': process.env.APIFRAME_KEY!,
       },
       body: JSON.stringify({
-        custom_mode: false,
-        mv: 'chirp-v3-5',
-        input: {
-          gpt_description_prompt: prompt,
-          make_instrumental: true,
-        },
+        prompt,
+        instrumental: true,
+        model: 'V3_5',
       }),
     })
 
@@ -25,17 +22,16 @@ export async function POST(req: NextRequest) {
     try {
       data = JSON.parse(raw)
     } catch {
-      throw new Error('GoAPI bad response: ' + raw.slice(0, 200))
+      throw new Error('Apiframe bad response: ' + raw.slice(0, 200))
     }
 
-    if (data.code !== 200) throw new Error('GoAPI error: ' + JSON.stringify(data))
-    const taskId = data.data?.task_id
-    if (!taskId) throw new Error('No task ID from GoAPI: ' + JSON.stringify(data))
+    if (!data.task_id) throw new Error('No task ID: ' + JSON.stringify(data))
+    const taskId = data.task_id
 
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 5000))
-      const poll = await fetch(`https://api.goapi.ai/api/suno/v1/music/${taskId}`, {
-        headers: { 'X-API-Key': process.env.GOAPI_KEY! },
+      const poll = await fetch(`https://api.apiframe.pro/suno-fetch/${taskId}`, {
+        headers: { 'Authorization': process.env.APIFRAME_KEY! },
       })
       const pollRaw = await poll.text()
       let pollData
@@ -44,15 +40,15 @@ export async function POST(req: NextRequest) {
       } catch {
         continue
       }
-      if (pollData.data?.status === 'complete') {
-        const audioUrl = pollData.data?.clips?.[0]?.audio_url
-        if (!audioUrl) throw new Error('No audio URL in response')
+      if (pollData.status === 'done') {
+        const audioUrl = pollData.songs?.[0]?.audio_url
+        if (!audioUrl) throw new Error('No audio URL: ' + JSON.stringify(pollData))
         return NextResponse.json({ audioUrl })
       }
-      if (pollData.data?.status === 'error') throw new Error('Suno generation failed')
+      if (pollData.status === 'error') throw new Error('Apiframe failed: ' + pollData.message)
     }
 
-    throw new Error('Suno timed out')
+    throw new Error('Music generation timed out')
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
