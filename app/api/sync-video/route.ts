@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
     let content = ''
 
     if (mode === 'song') {
-      content = 'I need you to sync a video to a specific song moment. Here is the video: ' + videoUrl + '. Find the song called "' + songName + '" online and download the audio. Locate the moment described as "' + moment + '" in the song. Trim a 10 to 15 second clip centered around that moment. Sync the video to that audio clip so the peak visual moment lands exactly on that moment. Export as MP4 and return only the final URL.'
+      content = '/video-sync Here is the video to sync: ' + videoUrl + '. Find the song "' + songName + '" on SoundCloud and download the audio. Locate the moment described as "' + moment + '". Sync the video so the peak visual moment lands exactly on that audio moment. Return only the final MP4 URL.'
     } else {
       content = 'You are a video quality reviewer. Watch this video: ' + videoUrl + '. Check if the audio and visual sync feels natural and polished. If it looks and sounds great as-is, return the original URL unchanged: ' + videoUrl + '. Only make edits if you see a genuine specific improvement — like a cut that feels off or audio that is clearly out of sync. If you do edit it, return the new MP4 URL. Return only the URL, nothing else.'
     }
