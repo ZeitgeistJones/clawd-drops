@@ -1,3 +1,4 @@
+// v2 - replicate
 import { NextRequest, NextResponse } from 'next/server'
 
 const CLAWD_REFERENCE = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.jpg'
@@ -6,7 +7,6 @@ export async function POST(req: NextRequest) {
   try {
     const { prompt } = await req.json()
 
-    // Submit to Replicate
     const res = await fetch('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
       method: 'POST',
       headers: {
