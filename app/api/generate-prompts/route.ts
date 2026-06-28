@@ -5,20 +5,22 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(req: NextRequest) {
   try {
-    const { goal } = await req.json()
+    const { goal, mode } = await req.json()
 
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       messages: [{
         role: 'user',
-        content: `You are a creative director for AI video generation. Given a goal, output ONLY a JSON object (no markdown, no explanation) with three keys:
+        content: `You are a creative director for AI video generation. The character in the reference image (@Image1) is Clawd — a red pyramid-headed figure with smug half-lidded eyes and a black bowtie. Clawd is the mascot of the CLAWD token on Base blockchain. He is confident, mysterious, and always unbothered.
 
-- "flux": A character image generation prompt for Clawd, a red pyramid-headed character with smug half-lidded eyes and a neat black bowtie. Describe his outfit, pose, lighting, and style for this specific goal. Always anime-influenced, high contrast, sharp lines. Never misspell as "claude".
-- "suno": A music generation prompt. Instrumental only, 8 seconds, no vocals. Match the energy of the goal.
-- "seedance": A video scene prompt. Describe camera movement, character action, lighting changes, and energy arc. Must reference "slow build for first X seconds, peak action at second Y" based on the goal energy. Use @Image1 for the character reference and @Audio1 for the audio.
+Given a goal, output ONLY a JSON object (no markdown, no explanation) with these keys:
+
+- "seedance": A video scene prompt for Seedance AI. Describe camera movement, character action, lighting, and energy arc. Always reference the character as "@Image1". Must include timing like "slow build for first X seconds, peak action at second Y". Make it cinematic and specific.
+${mode === 'auto' ? `- "suno": A music generation prompt. Instrumental only, 8 seconds, no vocals. Match the energy of the goal.` : ''}
 
 Goal: "${goal}"
+Mode: "${mode}"
 
 Return only the JSON object.`
       }]
