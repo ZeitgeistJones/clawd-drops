@@ -30,10 +30,9 @@ export async function POST(req: NextRequest) {
     })
 
     const data = await res.json()
-    if (!data.id) throw new Error('Seedance task failed: ' + JSON.stringify(data))
-
-    // Return task ID immediately — frontend will poll
-    return NextResponse.json({ taskId: data.id })
+    const taskId = data.taskId || data.id
+    if (!taskId) throw new Error('Seedance task failed: ' + JSON.stringify(data))
+    return NextResponse.json({ taskId })
 
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
