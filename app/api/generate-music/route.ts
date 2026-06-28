@@ -13,8 +13,9 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         prompt,
         model: 'elevenlabs-music',
-        elevenlabsMusicParams: {
-          duration: 10,
+        elevenlabsParams: {
+          music_length_ms: 10000,
+          force_instrumental: true,
         },
       }),
     })
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
       })
       const pollData = await poll.json()
       if (pollData.status === 'COMPLETED') {
-        const audioUrl = pollData.result?.audioUrl
+        const audioUrl = pollData.result?.tracks?.[0]?.audioUrl
         if (!audioUrl) throw new Error('No audioUrl: ' + JSON.stringify(pollData))
         return NextResponse.json({ audioUrl })
       }
