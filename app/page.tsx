@@ -171,6 +171,9 @@ export default function Home() {
 
         if (pollData.status === 'completed') {
           addLog('Both clips ready.')
+          videoUrl1 = videoUrl1 || pollData.videoUrl1
+          
+          // STEP 6: Submit Manus task
           setStage(STAGES.SYNCING)
           addLog('Sending to Manus for sync...')
           const syncRes = await fetch('/api/sync-video', {
@@ -186,11 +189,30 @@ export default function Home() {
               moment: mode === 'song' ? moment : null,
             }),
           })
-          const syncData = await syncRes.json()
-          if (syncData.error) throw new Error(syncData.error)
-          setVideoUrl(syncData.videoUrl)
-          addLog('Sync done.')
-          setStage(STAGES.DONE)
+          const syncJobData = await syncRes.json()
+          if (syncJobData.error) throw new Error(syncJobData.error)
+          addLog('Manus task submitted. Syncing...')
+
+          for (let j = 0; j < 60; j++) {
+            await new Promise(r => setTimeout(r, 10000))
+            const manusRes = await fetch('/api/poll-manus', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                taskId: syncJobData.taskId,
+                rawVideoUrl: syncJobData.rawVideoUrl,
+              }),
+            })
+            const manusData = await manusRes.json()
+            addLog(`Manus status: ${manusData.status}...`)
+            if (manusData.status === 'completed') {
+              setVideoUrl(manusData.videoUrl)
+              addLog('Sync done.')
+              setStage(STAGES.DONE)
+              break
+            }
+            if (manusData.error) throw new Error(manusData.error)
+          }
           break
         }
 
