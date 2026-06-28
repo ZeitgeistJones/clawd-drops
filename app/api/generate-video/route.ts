@@ -16,13 +16,12 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'seedance-1-0',
+        model: 'seedance-2-0-fast',
         input: {
           prompt: beatAwarePrompt,
           generation_type: 'reference-to-video',
           image_urls: [imageUrl],
-          model_version: 'lite',
-          duration: 4,
+          duration: 5,
           resolution: '480p',
           watermark: false,
           generate_audio: true,
