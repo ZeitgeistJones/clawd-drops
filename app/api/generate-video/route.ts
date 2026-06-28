@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, imageUrl, audioUrl, beat } = await req.json()
+    const { prompt, imageUrl, beat } = await req.json()
 
-    const beatAwarePrompt = `${prompt} @Image1 is the character reference. @Audio1 is the soundtrack. Slow build for first ${Math.round(beat.drop - 1)} seconds, explosive peak action at second ${beat.peak}, sync visual impact to audio drop at ${beat.drop}s.`
+    const beatAwarePrompt = `${prompt} @Image1 is the character reference. Slow build for first ${Math.round(beat.drop - 1)} seconds, explosive peak action at second ${beat.peak}.`
 
     const res = await fetch('https://api.seedance2.ai/v1/videos/generations', {
       method: 'POST',
@@ -18,10 +18,10 @@ export async function POST(req: NextRequest) {
           prompt: beatAwarePrompt,
           generation_type: 'reference-to-video',
           image_urls: [imageUrl],
-          audio_urls: [audioUrl],
           duration: 8,
           resolution: '720p',
           watermark: false,
+          generate_audio: true,
         },
       }),
     })
@@ -30,7 +30,6 @@ export async function POST(req: NextRequest) {
     if (!data.id) throw new Error('Seedance task failed: ' + JSON.stringify(data))
     const taskId = data.id
 
-    // Poll until complete
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 5000))
       const poll = await fetch(`https://api.seedance2.ai/v1/tasks/${taskId}`, {
