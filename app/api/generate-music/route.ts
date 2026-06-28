@@ -12,10 +12,10 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         prompt,
-        model: 'elevenlabs-music',
-        elevenlabsParams: {
-          music_length_ms: 10000,
-          force_instrumental: true,
+        model: 'suno',
+        sunoParams: {
+          instrumental: true,
+          model_version: 'V4_5PLUS',
         },
       }),
     })
