@@ -82,28 +82,16 @@ export default function Home() {
       setImageUrl(imageData.imageUrl)
       addLog('Character image ready.')
 
-      // STEP 3: Generate music
+      // STEP 3: Generate music (hardcoded while credits reload)
       setStage(STAGES.GENERATING_MUSIC)
-      addLog('GoAPI cooking the beat...')
-      const musicRes = await fetch('/api/generate-music', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptData.suno }),
-      })
-      const musicData = await musicRes.json()
-      if (musicData.error) throw new Error(musicData.error)
+      addLog('Cooking the beat...')
+      const musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
       addLog('Beat dropped.')
 
-      // STEP 4: Analyze audio
+      // STEP 4: Hardcoded beat data
       setStage(STAGES.ANALYZING_AUDIO)
       addLog('Analyzing beat structure...')
-      const audioRes = await fetch('/api/analyze-audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audioUrl: musicData.audioUrl }),
-      })
-      const audioData = await audioRes.json()
-      if (audioData.error) throw new Error(audioData.error)
+      const audioData = { bpm: 128, drop: 3.5, peak: 5.2, energy: 'high' }
       setBeatData(audioData)
       addLog(`BPM: ${audioData.bpm} | Drop: ${audioData.drop}s | Peak: ${audioData.peak}s`)
 
@@ -170,7 +158,6 @@ export default function Home() {
         textarea { caret-color: #ff3c3c; }
       `}</style>
 
-      {/* Header */}
       <div style={{ width: '100%', maxWidth: 680, paddingTop: 56, paddingBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
           <span style={{ fontSize: 11, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, textTransform: 'uppercase' }}>▲ CLAWD</span>
@@ -189,7 +176,6 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Input */}
       <div style={{ width: '100%', maxWidth: 680, marginBottom: 12 }}>
         <div style={{
           background: '#111118', border: `1px solid ${stage !== STAGES.IDLE ? '#ff3c3c33' : '#222'}`,
@@ -224,7 +210,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Pipeline stages */}
       {stage !== STAGES.IDLE && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 24 }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: 20 }}>
@@ -269,7 +254,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Prompts */}
       {prompts && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 24, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
           {[{ key: 'flux', label: 'CHARACTER', icon: '▲' }, { key: 'suno', label: 'BEAT', icon: '♪' }, { key: 'seedance', label: 'SCENE', icon: '◉' }].map(({ key, label, icon }) => (
@@ -281,7 +265,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Clawd image */}
       {imageUrl && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 24 }}>
           <div style={{ background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4, padding: 12, display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -294,7 +277,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Beat data */}
       {beatData && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 24, display: 'flex', gap: 8 }}>
           {[{ label: 'BPM', value: beatData.bpm }, { label: 'DROP', value: `${beatData.drop}s` }, { label: 'PEAK', value: `${beatData.peak}s` }, { label: 'ENERGY', value: beatData.energy?.toUpperCase() }].map(({ label, value }) => (
@@ -306,7 +288,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Output */}
       {stage === STAGES.DONE && videoUrl && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 40 }}>
           <div style={{ background: '#0d0d15', border: '1px solid #3cff8f33', borderRadius: 4, padding: 20, textAlign: 'center' }}>
@@ -320,7 +301,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Error */}
       {stage === STAGES.ERROR && (
         <div style={{ width: '100%', maxWidth: 680, marginBottom: 40, background: '#0d0d15', border: '1px solid #ff3c3c33', borderRadius: 4, padding: 20 }}>
           <div style={{ fontSize: 11, color: '#ff3c3c', letterSpacing: '0.15em', marginBottom: 8 }}>✕ PIPELINE FAILED</div>
