@@ -219,7 +219,6 @@ export default function Home() {
         if (pollData.error) throw new Error(pollData.error)
       }
 
-      if (stage !== STAGES.DONE) throw new Error('Video generation timed out')
 
     } catch (err: any) {
       setError(err.message || 'Pipeline failed')
