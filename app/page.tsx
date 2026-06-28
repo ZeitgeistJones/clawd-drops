@@ -68,7 +68,7 @@
           setVideoUrl(syncData.videoUrl)
           addLog('Sync done.')
           setStage(STAGES.DONE)
-          return
+          break
         }
 
         if (pollData.error) throw new Error(pollData.error)
