@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
         content: `You are a creative director for AI video generation. The character in the reference image (@Image1) is Clawd — a red pyramid-headed figure with smug half-lidded eyes and a black bowtie. Clawd is the mascot of the CLAWD token on Base blockchain. He is confident, mysterious, and always unbothered.
 
 Given a goal, output ONLY a JSON object (no markdown, no explanation) with these keys:
-
 - "seedance": A video scene prompt for Seedance AI. Describe camera movement, character action, lighting, and energy arc. Always reference the character as "@Image1". Must include timing like "slow build for first X seconds, peak action at second Y". Make it cinematic and specific.
+- "style": A short art style description extracted from the goal (e.g. "dark noir comic book style, sharp ink lines" or "pixel art, retro 16-bit, neon colors"). If no style is mentioned, default to "sharp anime style, high contrast, dramatic lighting".
 ${mode === 'auto' ? `- "suno": A music generation prompt. Instrumental only, 8 seconds, no vocals. Match the energy of the goal.` : ''}
 
 Goal: "${goal}"
