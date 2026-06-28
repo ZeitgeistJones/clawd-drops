@@ -112,7 +112,19 @@ export default function Home() {
       const audioData = { bpm: 128, drop: 2.0, peak: 3.5, energy: 'high' }
       setBeatData(audioData)
       addLog(`BPM: ${audioData.bpm} | Drop: ${audioData.drop}s | Peak: ${audioData.peak}s`)
-
+// STEP: Style character
+      addLog('Applying art style to character...')
+      const styleRes = await fetch('/api/style-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: finalImageUrl,
+          style: promptData.style || 'dark noir comic book style, sharp ink lines, dramatic shadows',
+        }),
+      })
+      const styleData = await styleRes.json()
+      const styledImageUrl = styleData.error ? finalImageUrl : styleData.imageUrl
+      addLog(styleData.error ? 'Style step skipped — using original.' : 'Character styled.')
       // STEP 5: Generate video
       setStage(STAGES.GENERATING_VIDEO)
       addLog('Seedance generating video...')
@@ -121,7 +133,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: promptData.seedance,
-          imageUrl: finalImageUrl,
+          imageUrl: styledImageUrl,
           beat: audioData,
         }),
       })
