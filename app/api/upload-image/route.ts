@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
     const file = formData.get('file') as File
     if (!file) throw new Error('No file provided')
 
-    const blob = await put(file.name, file, { access: 'public' })
+    const blob = await put(`uploads/${Date.now()}-${file.name}`, file, { access: 'public' })
     return NextResponse.json({ url: blob.url })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

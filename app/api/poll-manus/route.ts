@@ -14,7 +14,6 @@ export async function POST(req: NextRequest) {
     const statusEvent = messages.find((m: any) => m.type === 'status_update')
     const agentStatus = statusEvent?.status_update?.agent_status
 
-    // Handle waiting states
     if (agentStatus === 'waiting') {
       const detail = statusEvent?.status_update?.status_detail
       const eventType = detail?.waiting_for_event_type
