@@ -13,10 +13,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         prompt,
         model: 'suno',
-        sunoParams: {
-          instrumental: true,
-          model_version: 'V4_5PLUS',
-        },
+        sunoParams: { instrumental: true, model_version: 'V4_5PLUS' },
       }),
     })
 
@@ -35,7 +32,7 @@ export async function POST(req: NextRequest) {
         if (!audioUrl) throw new Error('No audioUrl: ' + JSON.stringify(pollData))
         return NextResponse.json({ audioUrl })
       }
-      if (pollData.status === 'FAILED') throw new Error('Music failed: ' + JSON.stringify(pollData))
+      if (pollData.status === 'FAILED') throw new Error('Music failed')
     }
 
     throw new Error('Music generation timed out')

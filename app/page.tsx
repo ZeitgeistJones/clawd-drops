@@ -33,23 +33,65 @@ const STAGE_ORDER = [
 ]
 
 const MODELS = [
-  { id: 'seedance-2-0-mini', label: 'MINI', creditsPerSec: 3 },
   { id: 'seedance-2-0-fast', label: 'FAST', creditsPerSec: 5 },
   { id: 'seedance-2-0', label: 'STANDARD', creditsPerSec: 6 },
 ]
 
 const DURATIONS = [4, 5, 8, 10]
 
+type MusicMode = 'ai' | 'my-song' | 'find-song'
+
 function estimateCredits(model: string, clipCount: number, duration: number) {
-  const m = MODELS.find(x => x.id === model) || MODELS[1]
+  const m = MODELS.find(x => x.id === model) || MODELS[0]
   return m.creditsPerSec * duration * clipCount
+}
+
+function ToggleGroup({ label, options, value, onChange, disabled }: {
+  label: string
+  options: { id: string; label: string }[]
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+      <span style={{ fontSize: 9, letterSpacing: '0.18em', color: '#2a2a2a', fontWeight: 700, width: 72, flexShrink: 0, textTransform: 'uppercase' }}>{label}</span>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {options.map(opt => (
+          <button
+            key={opt.id}
+            onClick={() => onChange(opt.id)}
+            disabled={disabled}
+            style={{
+              background: value === opt.id ? '#ff3c3c' : 'transparent',
+              color: value === opt.id ? '#fff' : '#333',
+              border: `1px solid ${value === opt.id ? '#ff3c3c' : '#1e1e1e'}`,
+              borderRadius: 3,
+              padding: '5px 14px',
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+              transition: 'all 0.15s',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export default function Home() {
   const [goal, setGoal] = useState('')
-  const [mode, setMode] = useState<'auto' | 'song'>('auto')
+  const [musicMode, setMusicMode] = useState<MusicMode>('my-song')
   const [songName, setSongName] = useState('')
   const [moment, setMoment] = useState('')
+  const [vibeDescription, setVibeDescription] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [styledPreview, setStyledPreview] = useState<string | null>(null)
@@ -62,6 +104,7 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
+  const [generatingGoal, setGeneratingGoal] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
 
@@ -90,6 +133,21 @@ export default function Home() {
     if (file && file.type.startsWith('image/')) handleImageFile(file)
   }
 
+  async function generateGoalFromSong() {
+    if (!songName.trim()) return
+    setGeneratingGoal(true)
+    try {
+      const res = await fetch('/api/generate-prompts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ musicMode, clipCount, songName, goal: '' }),
+      })
+      const data = await res.json()
+      if (data.generatedGoal) setGoal(data.generatedGoal)
+    } catch {}
+    setGeneratingGoal(false)
+  }
+
   async function runPipeline() {
     if (!goal.trim()) return
     const finalImageUrl = imageUrl || 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
@@ -108,20 +166,20 @@ export default function Home() {
       const promptRes = await fetch('/api/generate-prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, mode, clipCount }),
+        body: JSON.stringify({ goal, musicMode, clipCount }),
       })
       const promptData = await promptRes.json()
       if (promptData.error) throw new Error(promptData.error)
       setPrompts(promptData)
       addLog('Prompts locked.')
 
-      // STEP 2: Handle image
+      // STEP 2: Image
       setStage(STAGES.UPLOADING_IMAGE)
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
 
-      // STEP 3: Music (AUTO MODE only)
+      // STEP 3: Music (AI mode only)
       const musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
-      if (mode === 'auto') {
+      if (musicMode === 'ai') {
         setStage(STAGES.GENERATING_MUSIC)
         addLog('Cooking the beat...')
         addLog('Beat dropped.')
@@ -152,7 +210,7 @@ export default function Home() {
 
       // STEP 6: Generate clips
       setStage(STAGES.GENERATING_VIDEO)
-      addLog(`~${estMinutes} minutes estimated for ${clipCount} clips...`)
+      addLog(`~${estMinutes} min estimated for ${clipCount} clips...`)
       addLog('Generating clip 1 — the build...')
 
       const clipPrompts = Array.from({ length: clipCount }, (_, i) => promptData[`seedance${i + 1}`]).filter(Boolean)
@@ -171,7 +229,6 @@ export default function Home() {
       const videoJobData = await videoRes.json()
       if (videoJobData.error) throw new Error(videoJobData.error)
 
-      // Poll clips from frontend
       let completedClips: string[] = []
       let currentTaskId = videoJobData.taskId1
       let nextClipIndex = 1
@@ -195,7 +252,7 @@ export default function Home() {
         })
         const pollData = await pollRes.json()
 
-        if (pollData.status?.startsWith('clip') && pollData.status?.endsWith('_done')) {
+        if (pollData.status?.includes('_done')) {
           completedClips = pollData.completedClips
           currentTaskId = pollData.nextTaskId
           nextClipIndex = pollData.nextClipIndex
@@ -215,11 +272,11 @@ export default function Home() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               clips: completedClips,
-              audioUrl: musicData.audioUrl,
+              musicMode,
+              songName: musicMode === 'my-song' ? songName : null,
+              moment: musicMode === 'my-song' ? moment : null,
+              vibeDescription: musicMode === 'find-song' ? vibeDescription : null,
               beat: audioData,
-              mode,
-              songName: mode === 'song' ? songName : null,
-              moment: mode === 'song' ? moment : null,
             }),
           })
           const syncJobData = await syncRes.json()
@@ -231,10 +288,7 @@ export default function Home() {
             const manusRes = await fetch('/api/poll-manus', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                taskId: syncJobData.taskId,
-                rawVideoUrl: syncJobData.rawVideoUrl,
-              }),
+              body: JSON.stringify({ taskId: syncJobData.taskId, rawVideoUrl: syncJobData.rawVideoUrl }),
             })
             const manusData = await manusRes.json()
             addLog(`Manus: ${manusData.status}...`)
@@ -250,7 +304,7 @@ export default function Home() {
         }
 
         if (pollData.error) throw new Error(pollData.error)
-        addLog(`Video status: ${pollData.status}...`)
+        addLog(`Video: ${pollData.status}...`)
       }
 
     } catch (err: any) {
@@ -268,7 +322,7 @@ export default function Home() {
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      padding: '0 16px',
+      padding: '0 24px',
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&display=swap');
@@ -276,235 +330,250 @@ export default function Home() {
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
         @keyframes shimmer { 0%{left:-100%} 100%{left:100%} }
         * { box-sizing: border-box; }
-        textarea::placeholder { color: #2a2a2a; }
+        textarea::placeholder { color: #222; }
         textarea { caret-color: #ff3c3c; }
-        input::placeholder { color: #2a2a2a; }
+        input::placeholder { color: #222; }
+        button:hover:not(:disabled) { opacity: 0.85; }
       `}</style>
 
       {/* Header */}
-      <div style={{ width: '100%', maxWidth: 680, paddingTop: 56, paddingBottom: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-          <span style={{ fontSize: 11, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, textTransform: 'uppercase' }}>▲ CLAWD</span>
-          <span style={{ fontSize: 11, letterSpacing: '0.15em', color: '#444', textTransform: 'uppercase' }}>VIDEO PIPELINE</span>
+      <div style={{ width: '100%', maxWidth: 640, paddingTop: 64, paddingBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <span style={{ fontSize: 10, letterSpacing: '0.25em', color: '#ff3c3c', fontWeight: 700 }}>▲ CLAWD</span>
+          <span style={{ fontSize: 10, letterSpacing: '0.2em', color: '#222' }}>VIDEO PIPELINE</span>
         </div>
         <h1 style={{
-          fontSize: 'clamp(40px, 8vw, 72px)',
-          fontWeight: 900, lineHeight: 0.95, margin: '0 0 16px 0',
-          letterSpacing: '-0.03em',
-          background: 'linear-gradient(135deg, #fff 40%, #ff3c3c 100%)',
-          WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+          fontSize: 'clamp(48px, 9vw, 80px)',
+          fontWeight: 900,
+          lineHeight: 0.9,
+          margin: '0 0 20px 0',
+          letterSpacing: '-0.04em',
+          background: 'linear-gradient(135deg, #fff 50%, #ff3c3c 100%)',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
         }}>CLAWD<br />DROPS</h1>
-        <p style={{ fontSize: 14, color: '#555', margin: '0 0 24px 0', letterSpacing: '0.02em', lineHeight: 1.5 }}>
-          type a goal. drop a character. get a synced video.<br />
-          one input. frame-perfect output.
+        <p style={{ fontSize: 13, color: '#444', margin: '0 0 40px 0', lineHeight: 1.6 }}>
+          type a goal. drop a character. get a synced video.
         </p>
       </div>
 
-      {/* Controls row */}
-      <div style={{ width: '100%', maxWidth: 680, marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        
-        {/* Mode toggle */}
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: 9, letterSpacing: '0.15em', color: '#333', width: 60 }}>MODE</span>
-          {(['auto', 'song'] as const).map(m => (
-            <button key={m} onClick={() => setMode(m)} disabled={isRunning} style={{
-              background: mode === m ? '#ff3c3c' : '#111118',
-              color: mode === m ? '#fff' : '#444',
-              border: `1px solid ${mode === m ? '#ff3c3c' : '#222'}`,
-              borderRadius: 3, padding: '4px 12px',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-              textTransform: 'uppercase', cursor: 'pointer', fontFamily: 'inherit',
-            }}>
-              {m === 'auto' ? 'AUTO' : 'SONG MODE'}
-            </button>
-          ))}
-        </div>
-
-        {/* Model selector */}
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: 9, letterSpacing: '0.15em', color: '#333', width: 60 }}>MODEL</span>
-          {MODELS.map(m => (
-            <button key={m.id} onClick={() => setSelectedModel(m.id)} disabled={isRunning} style={{
-              background: selectedModel === m.id ? '#ff3c3c22' : '#111118',
-              color: selectedModel === m.id ? '#ff3c3c' : '#444',
-              border: `1px solid ${selectedModel === m.id ? '#ff3c3c' : '#222'}`,
-              borderRadius: 3, padding: '4px 12px',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-              textTransform: 'uppercase', cursor: 'pointer', fontFamily: 'inherit',
-            }}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Clips toggle */}
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: 9, letterSpacing: '0.15em', color: '#333', width: 60 }}>CLIPS</span>
-          {[1, 2, 3].map(n => (
-            <button key={n} onClick={() => setClipCount(n)} disabled={isRunning} style={{
-              background: clipCount === n ? '#ff3c3c22' : '#111118',
-              color: clipCount === n ? '#ff3c3c' : '#444',
-              border: `1px solid ${clipCount === n ? '#ff3c3c' : '#222'}`,
-              borderRadius: 3, padding: '4px 12px',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}>
-              {n}
-            </button>
-          ))}
-        </div>
-
-        {/* Duration toggle */}
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <span style={{ fontSize: 9, letterSpacing: '0.15em', color: '#333', width: 60 }}>LENGTH</span>
-          {DURATIONS.map(d => (
-            <button key={d} onClick={() => setDuration(d)} disabled={isRunning} style={{
-              background: duration === d ? '#ff3c3c22' : '#111118',
-              color: duration === d ? '#ff3c3c' : '#444',
-              border: `1px solid ${duration === d ? '#ff3c3c' : '#222'}`,
-              borderRadius: 3, padding: '4px 12px',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}>
-              {d}s
-            </button>
-          ))}
-        </div>
-
-        {/* Credit estimate */}
-        <div style={{ fontSize: 10, color: '#333', letterSpacing: '0.1em', paddingLeft: 64 }}>
-          EST. COST: <span style={{ color: '#ff3c3c' }}>{estCredits} CREDITS</span>
-          <span style={{ color: '#2a2a2a', marginLeft: 12 }}>~{estMinutes} MIN</span>
+      {/* Controls */}
+      <div style={{ width: '100%', maxWidth: 640, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <ToggleGroup
+          label="Music"
+          options={[
+            { id: 'ai', label: 'AI Song' },
+            { id: 'my-song', label: 'My Song' },
+            { id: 'find-song', label: 'Find Song' },
+          ]}
+          value={musicMode}
+          onChange={v => setMusicMode(v as MusicMode)}
+          disabled={isRunning}
+        />
+        <ToggleGroup
+          label="Model"
+          options={MODELS.map(m => ({ id: m.id, label: m.label }))}
+          value={selectedModel}
+          onChange={setSelectedModel}
+          disabled={isRunning}
+        />
+        <ToggleGroup
+          label="Clips"
+          options={[1, 2, 3].map(n => ({ id: String(n), label: String(n) }))}
+          value={String(clipCount)}
+          onChange={v => setClipCount(Number(v))}
+          disabled={isRunning}
+        />
+        <ToggleGroup
+          label="Length"
+          options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
+          value={String(duration)}
+          onChange={v => setDuration(Number(v))}
+          disabled={isRunning}
+        />
+        <div style={{ paddingLeft: 72, fontSize: 10, color: '#2a2a2a', letterSpacing: '0.1em' }}>
+          EST. <span style={{ color: '#ff3c3c' }}>{estCredits} CREDITS</span>
+          <span style={{ marginLeft: 12 }}>~{estMinutes} MIN</span>
         </div>
       </div>
 
-      {/* Input area */}
-      <div style={{ width: '100%', maxWidth: 680, marginBottom: 12 }}>
+      {/* Input card */}
+      <div style={{ width: '100%', maxWidth: 640, marginBottom: 12 }}>
         <div style={{
-          background: '#111118', border: `1px solid ${isRunning ? '#ff3c3c33' : '#222'}`,
-          borderRadius: 4, overflow: 'hidden',
+          background: '#0d0d15',
+          border: `1px solid ${isRunning ? '#ff3c3c22' : '#1a1a1a'}`,
+          borderRadius: 6,
+          overflow: 'hidden',
         }}>
+          {/* Goal */}
           <textarea
-            value={goal} onChange={e => setGoal(e.target.value)}
+            value={goal}
+            onChange={e => setGoal(e.target.value)}
             disabled={isRunning}
-            placeholder="clawd grinding on a build, late night, hypnotic vibe"
+            placeholder={
+              musicMode === 'find-song'
+                ? 'describe the scene and character energy...'
+                : 'clawd grinding on a build, late night, hypnotic vibe'
+            }
             rows={3}
             style={{
               width: '100%', background: 'transparent', border: 'none', outline: 'none',
-              color: '#fff', fontSize: 16, lineHeight: 1.5, padding: '16px 16px 12px',
+              color: '#fff', fontSize: 15, lineHeight: 1.6, padding: '18px 18px 14px',
               resize: 'none', fontFamily: 'inherit',
             }}
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runPipeline() }}
           />
-          <div style={{ height: 1, background: '#1a1a1a' }} />
+
+          <div style={{ height: 1, background: '#111' }} />
 
           {/* Image upload */}
           <div
             ref={dropRef}
             onDrop={handleDrop}
             onDragOver={e => e.preventDefault()}
-            style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}
+            style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 12 }}
           >
             {imagePreview ? (
-              <img src={styledPreview || imagePreview} style={{ width: 40, height: 40, borderRadius: 3, objectFit: 'cover' }} />
+              <img src={styledPreview || imagePreview} style={{ width: 36, height: 36, borderRadius: 3, objectFit: 'cover', flexShrink: 0 }} />
             ) : (
-              <div style={{
-                width: 40, height: 40, borderRadius: 3, border: '1px dashed #2a2a2a',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16, color: '#333', cursor: 'pointer',
-              }} onClick={() => fileInputRef.current?.click()}>▲</div>
+              <div
+                style={{
+                  width: 36, height: 36, borderRadius: 3, border: '1px dashed #222',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 14, color: '#2a2a2a', cursor: 'pointer', flexShrink: 0,
+                }}
+                onClick={() => fileInputRef.current?.click()}
+              >▲</div>
             )}
             <input
               type="text" value={imageUrl}
               onChange={e => { setImageUrl(e.target.value); setImagePreview(null); setStyledPreview(null) }}
-              placeholder="paste image URL or drag image (default: clawd)"
+              placeholder="drag image or paste URL (default: clawd)"
               disabled={isRunning}
               style={{
                 flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                color: '#666', fontSize: 12, fontFamily: 'inherit',
+                color: '#444', fontSize: 12, fontFamily: 'inherit',
               }}
             />
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }}
               onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f) }} />
           </div>
 
-          {/* Song Mode fields */}
-          {mode === 'song' && (
+          {/* Music mode fields */}
+          {musicMode === 'my-song' && (
             <>
-              <div style={{ height: 1, background: '#1a1a1a' }} />
-              <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input
-                  type="text" value={songName} onChange={e => setSongName(e.target.value)}
-                  placeholder="Song name (e.g. Lone Digger by Caravan Palace)"
-                  disabled={isRunning}
-                  style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 14, fontFamily: 'inherit', width: '100%' }}
-                />
-                <div style={{ height: 1, background: '#1a1a1a' }} />
+              <div style={{ height: 1, background: '#111' }} />
+              <div style={{ padding: '10px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <input
+                    type="text" value={songName} onChange={e => setSongName(e.target.value)}
+                    placeholder="Song name (e.g. No Surprises by Radiohead)"
+                    disabled={isRunning}
+                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
+                  />
+                  <button
+                    onClick={generateGoalFromSong}
+                    disabled={isRunning || generatingGoal || !songName.trim()}
+                    style={{
+                      background: 'transparent', border: '1px solid #222', borderRadius: 3,
+                      padding: '4px 10px', fontSize: 9, color: '#333', cursor: 'pointer',
+                      fontFamily: 'inherit', letterSpacing: '0.1em', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {generatingGoal ? '...' : 'GEN GOAL'}
+                  </button>
+                </div>
+                <div style={{ height: 1, background: '#111' }} />
                 <input
                   type="text" value={moment} onChange={e => setMoment(e.target.value)}
-                  placeholder="Moment (e.g. the horn drop)"
+                  placeholder="Moment (e.g. when the glockenspiel drops)"
                   disabled={isRunning}
-                  style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 14, fontFamily: 'inherit', width: '100%' }}
+                  style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit', width: '100%' }}
                 />
               </div>
             </>
           )}
 
-          <div style={{ height: 1, background: '#1a1a1a' }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px 12px' }}>
-            <span style={{ fontSize: 11, color: '#333', letterSpacing: '0.1em' }}>⌘ + ENTER TO RUN</span>
-            <button onClick={runPipeline} disabled={isRunning || !goal.trim()} style={{
-              background: isRunning ? '#1a1a1a' : '#ff3c3c',
-              color: isRunning ? '#444' : '#fff',
-              border: 'none', borderRadius: 3, padding: '8px 20px',
-              fontSize: 12, fontWeight: 700, letterSpacing: '0.15em',
-              textTransform: 'uppercase', cursor: isRunning || !goal.trim() ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit', transition: 'all 0.15s',
-            }}>
+          {musicMode === 'find-song' && (
+            <>
+              <div style={{ height: 1, background: '#111' }} />
+              <div style={{ padding: '10px 18px' }}>
+                <input
+                  type="text" value={vibeDescription} onChange={e => setVibeDescription(e.target.value)}
+                  placeholder="Vibe (e.g. melancholy, late night, cinematic)"
+                  disabled={isRunning}
+                  style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
+                />
+              </div>
+            </>
+          )}
+
+          <div style={{ height: 1, background: '#111' }} />
+
+          {/* Footer */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 18px 14px' }}>
+            <span style={{ fontSize: 10, color: '#222', letterSpacing: '0.1em' }}>⌘ + ENTER</span>
+            <button
+              onClick={runPipeline}
+              disabled={isRunning || !goal.trim()}
+              style={{
+                background: isRunning ? '#111' : '#ff3c3c',
+                color: isRunning ? '#333' : '#fff',
+                border: 'none', borderRadius: 3, padding: '8px 22px',
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.2em',
+                textTransform: 'uppercase', cursor: isRunning || !goal.trim() ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
               {isRunning ? 'RUNNING...' : 'DROP IT'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Pipeline stages */}
+      {/* Pipeline progress */}
       {stage !== STAGES.IDLE && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 24 }}>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 20 }}>
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 24 }}>
+          <div style={{ display: 'flex', gap: 3, marginBottom: 16 }}>
             {STAGE_ORDER.filter(s => s !== 'done').map(s => {
               const sIdx = stageIndex(s)
               const active = stage === s
               const done = currentIndex > sIdx
               return (
                 <div key={s} style={{
-                  flex: 1, height: 3, borderRadius: 2,
-                  background: done ? '#ff3c3c' : active ? '#ff3c3c88' : '#1c1c1c',
+                  flex: 1, height: 2, borderRadius: 1,
+                  background: done ? '#ff3c3c' : active ? '#ff3c3c66' : '#111',
                   transition: 'background 0.3s', position: 'relative', overflow: 'hidden',
                 }}>
                   {active && <div style={{
                     position: 'absolute', top: 0, left: '-100%',
                     width: '100%', height: '100%',
-                    background: 'linear-gradient(90deg, transparent, #fff4, transparent)',
-                    animation: 'shimmer 1.2s infinite',
+                    background: 'linear-gradient(90deg, transparent, #fff3, transparent)',
+                    animation: 'shimmer 1.4s infinite',
                   }} />}
                 </div>
               )
             })}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            {isRunning && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff3c3c', animation: 'pulse 1s infinite' }} />}
-            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.2em', color: stage === STAGES.ERROR ? '#ff3c3c' : stage === STAGES.DONE ? '#3cff8f' : '#ff3c3c' }}>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            {isRunning && <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#ff3c3c', animation: 'pulse 1s infinite' }} />}
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.2em',
+              color: stage === STAGES.ERROR ? '#ff3c3c' : stage === STAGES.DONE ? '#3cff8f' : '#ff3c3c',
+            }}>
               {STAGE_LABELS[stage] || stage.toUpperCase()}
             </span>
           </div>
+
           <div style={{
-            background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4,
-            padding: '12px 14px', fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 12, color: '#555', lineHeight: 1.8, minHeight: 80,
+            background: '#080810', border: '1px solid #111', borderRadius: 4,
+            padding: '12px 14px', fontFamily: 'monospace',
+            fontSize: 11, color: '#555', lineHeight: 1.9, minHeight: 72,
           }}>
             {log.map((l, i) => (
-              <div key={i} style={{ color: i === log.length - 1 ? '#888' : '#3a3a3a' }}>
-                <span style={{ color: '#2a2a2a', marginRight: 8 }}>›</span>{l}
+              <div key={i} style={{ color: i === log.length - 1 ? '#666' : '#2a2a2a' }}>
+                <span style={{ color: '#1e1e1e', marginRight: 8 }}>›</span>{l}
               </div>
             ))}
             {isRunning && <span style={{ color: '#ff3c3c', animation: 'blink 1s infinite' }}>▌</span>}
@@ -512,14 +581,14 @@ export default function Home() {
         </div>
       )}
 
-      {/* Styled character preview */}
+      {/* Styled preview */}
       {styledPreview && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 16 }}>
-          <div style={{ background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4, padding: 12, display: 'flex', alignItems: 'center', gap: 16 }}>
-            <img src={styledPreview} alt="Styled character" style={{ width: 64, height: 64, borderRadius: 3, objectFit: 'cover' }} />
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 16 }}>
+          <div style={{ background: '#080810', border: '1px solid #111', borderRadius: 4, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14 }}>
+            <img src={styledPreview} style={{ width: 52, height: 52, borderRadius: 3, objectFit: 'cover' }} />
             <div>
-              <div style={{ fontSize: 9, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 4 }}>▲ CHARACTER STYLED</div>
-              <div style={{ fontSize: 11, color: '#444' }}>Art style applied. Heading to Seedance.</div>
+              <div style={{ fontSize: 9, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 3 }}>▲ CHARACTER STYLED</div>
+              <div style={{ fontSize: 11, color: '#333' }}>Art style applied. Heading to Seedance.</div>
             </div>
           </div>
         </div>
@@ -527,15 +596,14 @@ export default function Home() {
 
       {/* Prompts */}
       {prompts && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 24, display: 'grid', gridTemplateColumns: `repeat(${Math.min(clipCount + (mode === 'auto' ? 1 : 0), 3)}, 1fr)`, gap: 8 }}>
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 20, display: 'grid', gridTemplateColumns: `repeat(${Math.min(clipCount, 3)}, 1fr)`, gap: 6 }}>
           {Array.from({ length: clipCount }, (_, i) => ({
             key: `seedance${i + 1}`,
             label: i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`,
-            icon: i === 0 ? '◉' : i === clipCount - 1 ? '▼' : '●'
-          })).concat(mode === 'auto' ? [{ key: 'suno', label: 'BEAT', icon: '♪' }] : []).map(({ key, label, icon }) => (
-            <div key={key} style={{ background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4, padding: 12 }}>
-              <div style={{ fontSize: 9, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 8 }}>{icon} {label}</div>
-              <div style={{ fontSize: 11, color: '#444', lineHeight: 1.6 }}>{prompts[key]?.slice(0, 100)}{prompts[key]?.length > 100 ? '...' : ''}</div>
+          })).map(({ key, label }) => (
+            <div key={key} style={{ background: '#080810', border: '1px solid #111', borderRadius: 4, padding: '10px 12px' }}>
+              <div style={{ fontSize: 8, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 6 }}>{label}</div>
+              <div style={{ fontSize: 10, color: '#333', lineHeight: 1.6 }}>{prompts[key]?.slice(0, 100)}{prompts[key]?.length > 100 ? '...' : ''}</div>
             </div>
           ))}
         </div>
@@ -543,11 +611,11 @@ export default function Home() {
 
       {/* Beat data */}
       {beatData && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 24, display: 'flex', gap: 8 }}>
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 20, display: 'flex', gap: 6 }}>
           {[{ label: 'BPM', value: beatData.bpm }, { label: 'DROP', value: `${beatData.drop}s` }, { label: 'PEAK', value: `${beatData.peak}s` }, { label: 'ENERGY', value: beatData.energy?.toUpperCase() }].map(({ label, value }) => (
-            <div key={label} style={{ flex: 1, background: '#0d0d15', border: '1px solid #1a1a1a', borderRadius: 4, padding: '10px 12px', textAlign: 'center' }}>
-              <div style={{ fontSize: 9, color: '#333', letterSpacing: '0.15em', marginBottom: 4 }}>{label}</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: '#ff3c3c', letterSpacing: '-0.02em' }}>{value}</div>
+            <div key={label} style={{ flex: 1, background: '#080810', border: '1px solid #111', borderRadius: 4, padding: '8px 10px', textAlign: 'center' }}>
+              <div style={{ fontSize: 8, color: '#222', letterSpacing: '0.15em', marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: '#ff3c3c' }}>{value}</div>
             </div>
           ))}
         </div>
@@ -555,14 +623,25 @@ export default function Home() {
 
       {/* Output */}
       {stage === STAGES.DONE && videoUrl && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 40 }}>
-          <div style={{ background: '#0d0d15', border: '1px solid #3cff8f33', borderRadius: 4, padding: 20, textAlign: 'center' }}>
-            <div style={{ fontSize: 11, letterSpacing: '0.2em', color: '#3cff8f', fontWeight: 700, marginBottom: 16 }}>✓ CLAWD DROPPED</div>
-            <video src={videoUrl} controls style={{ width: '100%', borderRadius: 3, background: '#000', marginBottom: 16 }} />
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 40 }}>
+          <div style={{ background: '#080810', border: '1px solid #3cff8f22', borderRadius: 6, padding: 20, textAlign: 'center' }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.2em', color: '#3cff8f', fontWeight: 700, marginBottom: 16 }}>✓ CLAWD DROPPED</div>
+            <video src={videoUrl} controls style={{ width: '100%', borderRadius: 4, background: '#000', marginBottom: 16 }} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-              <a href={videoUrl} download="clawd-drop.mp4" style={{ background: '#ff3c3c', color: '#fff', textDecoration: 'none', padding: '10px 24px', fontSize: 12, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3 }}>DOWNLOAD</a>
-              <button onClick={() => { navigator.clipboard.writeText(videoUrl) }} style={{ background: 'transparent', color: '#666', border: '1px solid #222', padding: '10px 24px', fontSize: 12, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit' }}>COPY LINK</button>
-              <button onClick={() => { setStage(STAGES.IDLE); setGoal(''); setLog([]); setPrompts(null); setBeatData(null); setVideoUrl(null); setStyledPreview(null) }} style={{ background: 'transparent', color: '#444', border: '1px solid #222', padding: '10px 24px', fontSize: 12, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit' }}>DROP AGAIN</button>
+              <a href={videoUrl} download="clawd-drop.mp4" style={{
+                background: '#ff3c3c', color: '#fff', textDecoration: 'none',
+                padding: '9px 22px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3,
+              }}>DOWNLOAD</a>
+              <button onClick={() => navigator.clipboard.writeText(videoUrl)} style={{
+                background: 'transparent', color: '#555', border: '1px solid #1a1a1a',
+                padding: '9px 22px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>COPY LINK</button>
+              <button onClick={() => { setStage(STAGES.IDLE); setGoal(''); setLog([]); setPrompts(null); setBeatData(null); setVideoUrl(null); setStyledPreview(null) }} style={{
+                background: 'transparent', color: '#333', border: '1px solid #1a1a1a',
+                padding: '9px 22px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>DROP AGAIN</button>
             </div>
           </div>
         </div>
@@ -570,12 +649,20 @@ export default function Home() {
 
       {/* Error */}
       {stage === STAGES.ERROR && (
-        <div style={{ width: '100%', maxWidth: 680, marginBottom: 40, background: '#0d0d15', border: '1px solid #ff3c3c33', borderRadius: 4, padding: 20 }}>
-          <div style={{ fontSize: 11, color: '#ff3c3c', letterSpacing: '0.15em', marginBottom: 8 }}>✕ PIPELINE FAILED</div>
-          <div style={{ fontSize: 13, color: '#555' }}>{error}</div>
-          <button onClick={() => setStage(STAGES.IDLE)} style={{ marginTop: 16, background: 'transparent', color: '#555', border: '1px solid #222', padding: '8px 16px', fontSize: 11, letterSpacing: '0.15em', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit' }}>RESET</button>
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 40, background: '#080810', border: '1px solid #ff3c3c22', borderRadius: 6, padding: 20 }}>
+          <div style={{ fontSize: 10, color: '#ff3c3c', letterSpacing: '0.15em', marginBottom: 8 }}>✕ PIPELINE FAILED</div>
+          <div style={{ fontSize: 13, color: '#444' }}>{error}</div>
+          <button onClick={() => setStage(STAGES.IDLE)} style={{
+            marginTop: 16, background: 'transparent', color: '#444', border: '1px solid #1a1a1a',
+            padding: '7px 16px', fontSize: 10, letterSpacing: '0.15em', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
+          }}>RESET</button>
         </div>
       )}
+
+      {/* Footer */}
+      <div style={{ width: '100%', maxWidth: 640, paddingBottom: 40, display: 'flex', justifyContent: 'center' }}>
+        <a href="/terms" style={{ fontSize: 10, color: '#222', letterSpacing: '0.1em', textDecoration: 'none' }}>terms</a>
+      </div>
     </div>
   )
 }

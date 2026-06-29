@@ -11,13 +11,12 @@ export async function POST(req: NextRequest) {
 
     const status = data.status || data.data?.status
     const videoUrl = data.data?.results?.[0] || data.results?.[0]
-    const lastFrameUrl = data.data?.last_frame_url  // fixed field name
+    const lastFrameUrl = data.data?.last_frame_url
 
     if (status === 'completed' && videoUrl) {
       const newCompletedClips = [...completedClips, videoUrl]
       const nextIndex = nextClipIndex ?? newCompletedClips.length
 
-      // If more clips to generate
       if (nextIndex < totalClips) {
         const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
         const nextImageUrl = lastFrameUrl || imageUrl
@@ -54,11 +53,7 @@ export async function POST(req: NextRequest) {
         })
       }
 
-      // All clips done
-      return NextResponse.json({
-        status: 'completed',
-        completedClips: newCompletedClips,
-      })
+      return NextResponse.json({ status: 'completed', completedClips: newCompletedClips })
     }
 
     if (status === 'failed') throw new Error('Seedance failed: ' + JSON.stringify(data))

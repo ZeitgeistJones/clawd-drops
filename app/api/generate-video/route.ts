@@ -7,7 +7,6 @@ export async function POST(req: NextRequest) {
     const { prompts, imageUrl, beat, model = 'seedance-2-0-fast', duration = 5 } = await req.json()
     const safeBeat = beat || { drop: 2.0, peak: 3.5 }
 
-    // Submit first clip
     const firstPrompt = `${prompts[0]} @Image1 is the character reference. Slow atmospheric build, tension rising.`
 
     const res1 = await fetch('https://api.seedance2.ai/v1/videos/generations', {
