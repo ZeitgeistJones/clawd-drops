@@ -2,41 +2,60 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt } = await req.json()
+    const { mood } = await req.json()
+    const query = mood || 'cinematic instrumental'
 
-    const res = await fetch('https://api.apiframe.ai/v2/music/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': process.env.APIFRAME_KEY!,
-      },
-      body: JSON.stringify({
-        prompt,
-        model: 'suno',
-        sunoParams: { instrumental: true, model_version: 'V4_5PLUS' },
-      }),
+    const fields = ['id', 'name', 'username', 'license', 'duration', 'previews'].join(',')
+    const filter = [
+      'license:("Creative Commons 0")',
+      'duration:[15 TO 240]',
+    ].join(' ')
+
+    const url = new URL('https://freesound.org/apiv2/search/text/')
+    url.searchParams.set('query', query)
+    url.searchParams.set('filter', filter)
+    url.searchParams.set('fields', fields)
+    url.searchParams.set('page_size', '10')
+    url.searchParams.set('sort', 'rating_desc')
+
+    const res = await fetch(url.toString(), {
+      headers: { 'Authorization': `Token ${process.env.FREESOUND_API_KEY}` },
     })
 
-    const data = await res.json()
-    const jobId = data.jobId
-    if (!jobId) throw new Error('No jobId: ' + JSON.stringify(data))
+    if (!res.ok) throw new Error('Freesound search failed: ' + res.status)
 
-    for (let i = 0; i < 36; i++) {
-      await new Promise(r => setTimeout(r, 5000))
-      const poll = await fetch(`https://api.apiframe.ai/v2/jobs/${jobId}`, {
-        headers: { 'X-API-Key': process.env.APIFRAME_KEY! },
+    const data = await res.json()
+    const results = data.results || []
+
+    if (results.length === 0) {
+      return NextResponse.json({
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        source: 'fallback',
       })
-      const pollData = await poll.json()
-      if (pollData.status === 'COMPLETED') {
-        const audioUrl = pollData.result?.tracks?.[0]?.audioUrl
-        if (!audioUrl) throw new Error('No audioUrl: ' + JSON.stringify(pollData))
-        return NextResponse.json({ audioUrl })
-      }
-      if (pollData.status === 'FAILED') throw new Error('Music failed')
     }
 
-    throw new Error('Music generation timed out')
+    const track = results[0]
+    const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
+
+    if (!audioUrl) {
+      return NextResponse.json({
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        source: 'fallback',
+      })
+    }
+
+    return NextResponse.json({
+      audioUrl,
+      source: 'freesound',
+      title: track.name,
+      creator: track.username,
+    })
+
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    return NextResponse.json({
+      audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+      source: 'fallback',
+      error: err.message,
+    })
   }
 }
