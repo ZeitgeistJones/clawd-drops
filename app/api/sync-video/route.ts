@@ -12,49 +12,73 @@ function clipRole(i: number, total: number): string {
   return 'escalation'
 }
 
-function buildClipList(clips: string[], clipDuration = 8): string {
-  const meta = metadataForClipDuration(clipDuration)
+function buildClipList(clips: string[], clipDurations: number[]): string {
   return clips
     .map((url, i) => {
+      const dur = clipDurations[i] ?? clipDurations[clipDurations.length - 1] ?? 8
+      const meta = metadataForClipDuration(dur)
       return `Clip ${i + 1} (${clipRole(i, clips.length)}): ${url} — ${meta.durationSeconds}s, ${meta.fps}fps, ${meta.frameCount} frames`
     })
     .join('\n')
+}
+
+function buildFrameList(frames: string[]): string {
+  return frames.map((url, i) => `Frame ${i + 1}: ${url}`).join('\n')
+}
+
+function audioBlock(audioUrl: string, beat: { drop?: number; dropSeconds?: number; peak?: number; peakSeconds?: number }) {
+  const dropSec = beat?.drop ?? beat?.dropSeconds ?? 2
+  const peakSec = beat?.peak ?? beat?.peakSeconds ?? dropSec + 0.3
+  return `Audio track URL: ${audioUrl}
+Drop at second ${dropSec}. Peak at second ${peakSec}.
+Download this audio URL directly. Do not search for or download music from YouTube, SoundCloud, or any other source.`
 }
 
 export async function POST(req: NextRequest) {
   let rawVideoUrl = null
   try {
     const body = await req.json()
-    const { clips, musicMode, songName, moment, vibeDescription, beat, audioUrl, clipDuration } = body
-    rawVideoUrl = clips?.[0]
+    const {
+      clips = [],
+      frames = [],
+      mode = 'video',
+      musicMode,
+      beat,
+      audioUrl,
+      clipDurations,
+    } = body
 
-    if (!clips || clips.length === 0) throw new Error('No clips provided')
+    rawVideoUrl = clips?.[0] ?? frames?.[0] ?? null
 
-    const durationSec = typeof clipDuration === 'number' ? clipDuration : 8
-    // #region agent log
-    console.log('[sync-video] start', { clipCount: clips.length, clipDuration: durationSec, musicMode })
-    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'app/api/sync-video/route.ts:POST',message:'sync start',data:{clipCount:clips.length,clipDuration:durationSec,musicMode},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-    // #endregion
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return NextResponse.json({ error: 'No audio URL provided' }, { status: 400 })
+    }
 
-    const clipList = buildClipList(clips, durationSec)
-    const durationNote =
-      'Clip durations are provided above — loop or trim clips to fit the audio without re-probing duration.'
+    const durations: number[] = Array.isArray(clipDurations) && clipDurations.length
+      ? clipDurations
+      : clips.map(() => 8)
+
+    const audioSection = audioBlock(audioUrl, beat ?? {})
+    const dropSec = beat?.drop ?? beat?.dropSeconds ?? 2
 
     let content = ''
 
-    if (musicMode === 'my-song') {
-      content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nFind the song "${songName}" on SoundCloud or YouTube and download the full audio. Locate the moment described as "${moment}". Cut between clips at musically appropriate moments with the final cut landing exactly at that moment. Apply VFX at cut points — brightness flash, saturation boost, RGB split glitch, screen shake. Apply slow-mo to the build clip and speed ramp into the drop. Apply consistent color grading. Export as MP4 and return only the final URL.`
-    } else if (musicMode === 'find-song') {
-      content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nAnalyze these clips carefully. Identify the energy arc — the buildup, the release, the key action moments. Use the energy transfer framework: find the potential energy (buildup), kinetic release (impact), and absorption (reaction). The vibe described is: "${vibeDescription || 'match the visual energy of the clips'}". Based on this analysis, find a song on SoundCloud or YouTube that perfectly matches this energy and vibe. Download the full audio. Find the exact moment in the song that best matches the key visual action. Cut between clips at that moment. Apply VFX — brightness flash, RGB split glitch, screen shake. Apply slow-mo to build clip, speed ramp into drop. Export as MP4 and return only the final URL.`
+    if (mode === 'flipbook') {
+      if (!frames.length) throw new Error('No flipbook frames provided')
+      const frameList = buildFrameList(frames)
+      content = `/video-sync Here are ${frames.length} sequential character images showing an emotional arc:\n${frameList}\n\n${audioSection}\n\nStitch these into a fast flipbook-style video — quick cuts between frames, building tension, with the final frame landing on the music drop around second ${dropSec}. Apply subtle VFX at the drop — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
     } else {
-      if (!audioUrl) throw new Error('No audio URL provided for AI music mode')
-      const dropSec = beat?.drop ?? beat?.dropSeconds ?? 2
-      content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nAudio track URL: ${audioUrl}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
-    }
+      if (!clips.length) throw new Error('No clips provided')
+      const clipList = buildClipList(clips, durations)
+      const durationNote =
+        'Clip durations are provided above — loop or trim clips to fit the audio without re-probing duration.'
 
-    // #region agent log
-    console.log('[sync-video] calling Manus task.create')
-    // #endregion
+      if (musicMode === 'find-song') {
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\nThis is a CC0 track pre-selected by the app. Use only the provided audio URL.\n${durationNote} Cut between clips at the drop around second ${dropSec}. Apply VFX at cut points — brightness flash, saturation boost, RGB split glitch, screen shake. Apply slow-mo to the build clip and speed ramp into the drop. Apply consistent color grading. Export as MP4 and return only the final URL.`
+      } else {
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
+      }
+    }
 
     const taskRes = await fetch(MANUS_BASE + '/v2/task.create', {
       method: 'POST',
@@ -66,17 +90,12 @@ export async function POST(req: NextRequest) {
     })
 
     const taskText = await taskRes.text()
-    let taskData: { ok?: boolean; task_id?: string; error?: string }
+    let taskData: { ok?: boolean; task_id?: string }
     try {
       taskData = JSON.parse(taskText)
     } catch {
       throw new Error(`Manus returned non-JSON (${taskRes.status}): ${taskText.slice(0, 200)}`)
     }
-
-    // #region agent log
-    console.log('[sync-video] manus response', { ok: taskData.ok, status: taskRes.status, hasTaskId: !!taskData.task_id })
-    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'app/api/sync-video/route.ts:POST',message:'manus response',data:{ok:taskData.ok,status:taskRes.status,hasTaskId:!!taskData.task_id},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-    // #endregion
 
     if (!taskData.ok) throw new Error('Manus task creation failed: ' + JSON.stringify(taskData))
 
@@ -84,9 +103,6 @@ export async function POST(req: NextRequest) {
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Sync failed'
-    // #region agent log
-    console.error('[sync-video] error', message)
-    // #endregion
     return NextResponse.json({ videoUrl: rawVideoUrl, error: message }, { status: 500 })
   }
 }

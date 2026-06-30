@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
       beat,
       model = 'seedance-2-0-fast',
       duration = 5,
+      clipDurations,
       forceProvider,
     } = await req.json()
 
@@ -27,6 +28,11 @@ export async function POST(req: NextRequest) {
     }
 
     const safeBeat = beat || { drop: 2.0, peak: 3.5 }
+    const durations: number[] = Array.isArray(clipDurations) && clipDurations.length === prompts.length
+      ? clipDurations
+      : prompts.map(() => duration)
+    const clipDuration = durations[0] ?? duration
+
     const firstPrompt = `${prompts[0]} @Image1 is the character reference. Slow atmospheric build, tension rising.`
     const totalClips = prompts.length
     const forced = forceProvider && isVideoProvider(forceProvider) ? forceProvider : undefined
@@ -35,8 +41,8 @@ export async function POST(req: NextRequest) {
       {
         prompt: firstPrompt,
         imageUrl,
-        model,
-        duration,
+        model: model === 'flipbook' ? 'seedance-2-0-fast' : model,
+        duration: clipDuration,
         returnLastFrame: true,
       },
       forced
@@ -60,7 +66,8 @@ export async function POST(req: NextRequest) {
       imageUrl,
       beat: safeBeat,
       model,
-      duration,
+      duration: clipDuration,
+      clipDurations: durations,
       totalClips,
     })
   } catch (err: unknown) {

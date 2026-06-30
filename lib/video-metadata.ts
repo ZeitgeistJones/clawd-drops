@@ -22,6 +22,10 @@ export function fallbackVideoMetadata(durationSeconds = 8): VideoMetadataWithFal
   }
 }
 
+export function metadataForClipDuration(clipDuration = 8): VideoMetadataWithFallback {
+  return fallbackVideoMetadata(clipDuration)
+}
+
 function readUInt32BE(buf: Buffer, offset: number): number {
   return buf.readUInt32BE(offset)
 }
@@ -143,28 +147,10 @@ export async function probeVideoUrl(
   try {
     const buffer = await loadProbeBuffer(videoUrl)
     if (!buffer || buffer.length === 0) {
-      // #region agent log
-      fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'lib/video-metadata.ts:probeVideoUrl',message:'probe buffer empty',data:{defaultDuration},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      console.log('[video-metadata] probe buffer empty, using fallback', { defaultDuration })
-      // #endregion
       return fallbackVideoMetadata(defaultDuration)
     }
-
-    const result = parseMp4Metadata(buffer, defaultDuration)
-    // #region agent log
-    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'lib/video-metadata.ts:probeVideoUrl',message:'probe result',data:{source:result.source,durationSeconds:result.durationSeconds},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-    console.log('[video-metadata] probe result', result)
-    // #endregion
-    return result
-  } catch (err) {
-    // #region agent log
-    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'lib/video-metadata.ts:probeVideoUrl',message:'probe error',data:{error:err instanceof Error?err.message:String(err),defaultDuration},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-    console.error('[video-metadata] probe error', err)
-    // #endregion
+    return parseMp4Metadata(buffer, defaultDuration)
+  } catch {
     return fallbackVideoMetadata(defaultDuration)
   }
-}
-
-export function metadataForClipDuration(clipDuration = 8): VideoMetadataWithFallback {
-  return fallbackVideoMetadata(clipDuration)
 }

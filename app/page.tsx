@@ -34,17 +34,28 @@ const STAGE_ORDER = [
 ]
 
 const MODELS = [
-  { id: 'seedance-2-0-fast', label: 'FAST', creditsPerSec: 5 },
-  { id: 'seedance-2-0', label: 'STANDARD', creditsPerSec: 6 },
+  { id: 'seedance-2-0-fast', label: 'FAST' },
+  { id: 'seedance-2-0', label: 'STANDARD' },
+  { id: 'flipbook', label: 'FLIPBOOK' },
 ]
 
 const DURATIONS = [4, 5, 8, 10]
+const POSE_COUNTS = [2, 3, 4, 5, 6]
+const CLAWD_DEFAULT = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
 
 type MusicMode = 'ai' | 'my-song' | 'find-song'
 
-function estimateCredits(model: string, clipCount: number, duration: number) {
-  const m = MODELS.find(x => x.id === model) || MODELS[0]
-  return m.creditsPerSec * duration * clipCount
+function getClipDurations(clipCount: number, buildDuration: number, dropDuration: number, singleDuration: number): number[] {
+  if (clipCount <= 1) return [singleDuration]
+  if (clipCount === 2) return [buildDuration, dropDuration]
+  return Array.from({ length: clipCount }, (_, i) => (i === clipCount - 1 ? dropDuration : buildDuration))
+}
+
+function estimateMinutes(isFlipbook: boolean, clipCount: number, poseCount: number, buildDuration: number, dropDuration: number, singleDuration: number) {
+  if (isFlipbook) return Math.ceil(poseCount * 0.25) + 2
+  const durations = getClipDurations(clipCount, buildDuration, dropDuration, singleDuration)
+  const total = durations.reduce((a, b) => a + b, 0)
+  return Math.ceil((total * 1.5) / 60) + 3
 }
 
 function ToggleGroup({ label, options, value, onChange, disabled }: {
@@ -57,7 +68,7 @@ function ToggleGroup({ label, options, value, onChange, disabled }: {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
       <span style={{ fontSize: 9, letterSpacing: '0.18em', color: '#2a2a2a', fontWeight: 700, width: 72, flexShrink: 0, textTransform: 'uppercase' }}>{label}</span>
-      <div style={{ display: 'flex', gap: 4 }}>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {options.map(opt => (
           <button
             key={opt.id}
@@ -90,31 +101,35 @@ function ToggleGroup({ label, options, value, onChange, disabled }: {
 export default function Home() {
   const [goal, setGoal] = useState('')
   const [musicMode, setMusicMode] = useState<MusicMode>('my-song')
-  const [songName, setSongName] = useState('')
-  const [moment, setMoment] = useState('')
   const [vibeDescription, setVibeDescription] = useState('')
+  const [audioUrl, setAudioUrl] = useState('')
+  const [audioFileName, setAudioFileName] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [styledPreview, setStyledPreview] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState('seedance-2-0-fast')
   const [clipCount, setClipCount] = useState(2)
   const [duration, setDuration] = useState(8)
+  const [buildDuration, setBuildDuration] = useState(8)
+  const [dropDuration, setDropDuration] = useState(8)
+  const [poseCount, setPoseCount] = useState(5)
   const [stage, setStage] = useState(STAGES.IDLE)
   const [prompts, setPrompts] = useState<any>(null)
   const [beatData, setBeatData] = useState<BeatAnalysisResult | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
-  const [generatingGoal, setGeneratingGoal] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
 
+  const isFlipbook = selectedModel === 'flipbook'
   const addLog = (msg: string) => setLog(prev => [...prev, msg])
   const stageIndex = (s: string) => STAGE_ORDER.indexOf(s)
   const currentIndex = stageIndex(stage)
   const isRunning = ![STAGES.IDLE, STAGES.DONE, STAGES.ERROR].includes(stage)
-  const estCredits = estimateCredits(selectedModel, clipCount, duration)
-  const estMinutes = Math.ceil((clipCount * duration * 1.5) / 60) + 3
+  const estMinutes = estimateMinutes(isFlipbook, clipCount, poseCount, buildDuration, dropDuration, duration)
+  const canDrop = goal.trim() && (musicMode !== 'my-song' || !!audioUrl)
 
   async function handleImageFile(file: File) {
     const preview = URL.createObjectURL(file)
@@ -128,30 +143,87 @@ export default function Home() {
     setImageUrl(data.url)
   }
 
+  async function handleAudioFile(file: File) {
+    setAudioFileName(file.name)
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch('/api/upload-audio', { method: 'POST', body: formData })
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+    setAudioUrl(data.url)
+  }
+
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
     if (file && file.type.startsWith('image/')) handleImageFile(file)
   }
 
-  async function generateGoalFromSong() {
-    if (!songName.trim()) return
-    setGeneratingGoal(true)
-    try {
-      const res = await fetch('/api/generate-prompts', {
+  async function pollManus(taskId: string, rawVideoUrl: string | null) {
+    addLog('Manus task submitted. Syncing...')
+    let lastStatus = ''
+    for (let j = 0; j < 60; j++) {
+      await new Promise(r => setTimeout(r, 10000))
+      const manusRes = await fetch('/api/poll-manus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ musicMode, clipCount, songName, goal: '' }),
+        body: JSON.stringify({ taskId, rawVideoUrl }),
       })
-      const data = await res.json()
-      if (data.generatedGoal) setGoal(data.generatedGoal)
-    } catch {}
-    setGeneratingGoal(false)
+      const manusData = await manusRes.json()
+      const checkNum = j + 1
+      const status = manusData.status || 'processing'
+      if (status !== lastStatus || checkNum % 5 === 0) {
+        addLog(status === lastStatus ? `Manus: syncing… (check ${checkNum})` : `Manus: ${status}…`)
+      }
+      lastStatus = status
+      if (manusData.status === 'completed') {
+        setVideoUrl(manusData.videoUrl)
+        addLog('Sync done.')
+        setStage(STAGES.DONE)
+        return
+      }
+      if (manusData.error) throw new Error(manusData.error)
+    }
+  }
+
+  async function syncToManus(opts: {
+    mode: 'video' | 'flipbook'
+    clips?: string[]
+    frames?: string[]
+    musicData: { audioUrl: string }
+    audioData: BeatAnalysisResult
+    clipDurations: number[]
+  }) {
+    setStage(STAGES.SYNCING)
+    addLog('Sending to Manus for sync...')
+    const syncRes = await fetch('/api/sync-video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: opts.mode,
+        clips: opts.clips ?? [],
+        frames: opts.frames ?? [],
+        musicMode,
+        audioUrl: opts.musicData.audioUrl,
+        beat: opts.audioData,
+        clipDurations: opts.clipDurations,
+      }),
+    })
+    const syncText = await syncRes.text()
+    let syncJobData: { taskId?: string; rawVideoUrl?: string; error?: string }
+    try {
+      syncJobData = JSON.parse(syncText)
+    } catch {
+      throw new Error(`Sync failed (${syncRes.status}): ${syncText.slice(0, 200)}`)
+    }
+    if (syncJobData.error) throw new Error(syncJobData.error)
+    await pollManus(syncJobData.taskId!, syncJobData.rawVideoUrl ?? null)
   }
 
   async function runPipeline() {
-    if (!goal.trim()) return
-    const finalImageUrl = imageUrl || 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
+    if (!canDrop) return
+    const finalImageUrl = imageUrl || CLAWD_DEFAULT
+    const clipDurations = getClipDurations(clipCount, buildDuration, dropDuration, duration)
 
     setStage(STAGES.PROMPTING)
     setLog([])
@@ -162,68 +234,90 @@ export default function Home() {
     setError(null)
 
     try {
-      // STEP 1: Generate prompts
       addLog('Claude is reading your goal...')
       const promptRes = await fetch('/api/generate-prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, musicMode, clipCount }),
+        body: JSON.stringify({
+          goal,
+          musicMode,
+          clipCount,
+          outputMode: isFlipbook ? 'flipbook' : 'video',
+          poseCount,
+        }),
       })
       const promptData = await promptRes.json()
       if (promptData.error) throw new Error(promptData.error)
       setPrompts(promptData)
       addLog('Prompts locked.')
 
-      // STEP 2: Image
       setStage(STAGES.UPLOADING_IMAGE)
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
 
-      // STEP 3: Music (AI mode only)
- let musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
+      let musicData: { audioUrl: string; title?: string } = { audioUrl: '' }
+
       if (musicMode === 'ai') {
         setStage(STAGES.GENERATING_MUSIC)
         addLog('Generating original instrumental with MusicAPI...')
         const musicRes = await fetch('/api/generate-song', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: promptData.style || goal,
-            durationSeconds: 18,
-          }),
+          body: JSON.stringify({ prompt: promptData.style || goal, durationSeconds: 18 }),
         })
         const musicResult = await musicRes.json()
         if (!musicResult.success || !musicResult.audioUrl) {
           throw new Error(musicResult.error || 'Music generation failed')
         }
-        musicData = { audioUrl: musicResult.audioUrl }
+        musicData = { audioUrl: musicResult.audioUrl, title: musicResult.title }
         addLog(
           musicResult.provider === 'musicapi'
             ? `Generated: ${musicResult.title || 'AI track'}`
             : 'Using library fallback track.'
         )
+      } else if (musicMode === 'find-song') {
+        setStage(STAGES.GENERATING_MUSIC)
+        addLog('Searching CC0 library (Freesound / Jamendo)...')
+        const musicRes = await fetch('/api/generate-music', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mood: vibeDescription || goal }),
+        })
+        const musicResult = await musicRes.json()
+        if (!musicResult.audioUrl) throw new Error(musicResult.error || 'Library search failed')
+        musicData = { audioUrl: musicResult.audioUrl, title: musicResult.title }
+        addLog(`Found: ${musicResult.title || 'CC0 track'} (${musicResult.source})`)
+      } else {
+        if (!audioUrl) throw new Error('Upload an audio file for My Song mode')
+        musicData = { audioUrl }
+        addLog(`Using uploaded track: ${audioFileName || 'your audio'}`)
       }
 
-      // STEP 4: Beat data
       setStage(STAGES.ANALYZING_AUDIO)
       addLog('Analyzing beat structure...')
+      const analysisDuration = isFlipbook
+        ? 18
+        : clipDurations.reduce((a, b) => a + b, 0) || duration
+
       let audioData: BeatAnalysisResult = {
         bpm: 128,
-        drop: duration * 0.55,
-        peak: duration * 0.7,
-        dropSeconds: duration * 0.55,
-        peakSeconds: duration * 0.7,
+        drop: analysisDuration * 0.55,
+        peak: analysisDuration * 0.7,
+        dropSeconds: analysisDuration * 0.55,
+        peakSeconds: analysisDuration * 0.7,
         energy: 'high',
         source: 'fallback',
         dropConfidence: 'low',
       }
-      if (musicMode === 'ai' && musicData.audioUrl) {
+
+      if (musicData.audioUrl) {
         const analyzeRes = await fetch('/api/analyze-audio', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audioUrl: musicData.audioUrl, duration }),
+          body: JSON.stringify({ audioUrl: musicData.audioUrl, duration: analysisDuration }),
         })
         audioData = (await analyzeRes.json()) as BeatAnalysisResult
       }
+
       setBeatData(audioData)
       addLog(
         audioData.source === 'fallback'
@@ -235,7 +329,6 @@ export default function Home() {
               : `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
       )
 
-      // STEP 5: Style character
       setStage(STAGES.STYLING)
       addLog('Applying art style to character...')
       const styleRes = await fetch('/api/style-image', {
@@ -251,7 +344,40 @@ export default function Home() {
       if (!styleData.error) setStyledPreview(styledImageUrl)
       addLog(styleData.error ? 'Style step skipped — using original.' : 'Character styled.')
 
-      // STEP 6: Generate clips
+      if (isFlipbook) {
+        setStage(STAGES.GENERATING_VIDEO)
+        addLog(`Generating ${poseCount} flipbook frames...`)
+        const completedFrames: string[] = []
+        const style = promptData.style || 'sharp anime style, high contrast, dramatic lighting'
+
+        for (let i = 0; i < poseCount; i++) {
+          addLog(`Generating frame ${i + 1} of ${poseCount}...`)
+          const posePrompt = promptData[`flipbook${i + 1}`] || `Pose ${i + 1} in the emotional arc`
+          const frameRes = await fetch('/api/style-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imageUrl: styledImageUrl,
+              style,
+              posePrompt,
+            }),
+          })
+          const frameData = await frameRes.json()
+          if (frameData.error) throw new Error(`Frame ${i + 1} failed: ${frameData.error}`)
+          completedFrames.push(frameData.imageUrl)
+        }
+
+        addLog(`All ${poseCount} frames ready.`)
+        await syncToManus({
+          mode: 'flipbook',
+          frames: completedFrames,
+          musicData,
+          audioData,
+          clipDurations,
+        })
+        return
+      }
+
       setStage(STAGES.GENERATING_VIDEO)
       addLog(`~${estMinutes} min estimated for ${clipCount} clips...`)
       addLog('Generating clip 1 — the build...')
@@ -266,7 +392,8 @@ export default function Home() {
           imageUrl: styledImageUrl,
           beat: audioData,
           model: selectedModel,
-          duration,
+          duration: clipDurations[0],
+          clipDurations,
         }),
       })
       const videoJobData = await videoRes.json()
@@ -295,7 +422,8 @@ export default function Home() {
             imageUrl: styledImageUrl,
             beat: audioData,
             model: selectedModel,
-            duration,
+            duration: clipDurations[nextClipIndex - 1] ?? clipDurations[0],
+            clipDurations,
             totalClips: clipCount,
             provider: videoProvider,
           }),
@@ -314,51 +442,13 @@ export default function Home() {
         if (pollData.status === 'completed') {
           completedClips = pollData.completedClips
           addLog(`All ${clipCount} clips ready.`)
-
-          // STEP 7: Manus sync
-          setStage(STAGES.SYNCING)
-          addLog('Sending to Manus for sync...')
-          const syncRes = await fetch('/api/sync-video', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              clips: completedClips,
-              musicMode,
-              audioUrl: musicMode === 'ai' ? musicData.audioUrl : null,
-              songName: musicMode === 'my-song' ? songName : null,
-              moment: musicMode === 'my-song' ? moment : null,
-              vibeDescription: musicMode === 'find-song' ? vibeDescription : null,
-              beat: audioData,
-              clipDuration: duration,
-            }),
+          await syncToManus({
+            mode: 'video',
+            clips: completedClips,
+            musicData,
+            audioData,
+            clipDurations,
           })
-          const syncText = await syncRes.text()
-          let syncJobData: { taskId?: string; rawVideoUrl?: string; error?: string }
-          try {
-            syncJobData = JSON.parse(syncText)
-          } catch {
-            throw new Error(`Sync failed (${syncRes.status}): ${syncText.slice(0, 200)}`)
-          }
-          if (syncJobData.error) throw new Error(syncJobData.error)
-          addLog('Manus task submitted. Syncing...')
-
-          for (let j = 0; j < 60; j++) {
-            await new Promise(r => setTimeout(r, 10000))
-            const manusRes = await fetch('/api/poll-manus', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ taskId: syncJobData.taskId, rawVideoUrl: syncJobData.rawVideoUrl }),
-            })
-            const manusData = await manusRes.json()
-            addLog(`Manus: ${manusData.status}...`)
-            if (manusData.status === 'completed') {
-              setVideoUrl(manusData.videoUrl)
-              addLog('Sync done.')
-              setStage(STAGES.DONE)
-              break
-            }
-            if (manusData.error) throw new Error(manusData.error)
-          }
           break
         }
 
@@ -366,11 +456,19 @@ export default function Home() {
         addLog(`Video: ${pollData.status}...`)
       }
 
-    } catch (err: any) {
-      setError(err.message || 'Pipeline failed')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Pipeline failed')
       setStage(STAGES.ERROR)
     }
   }
+
+  const previewCount = isFlipbook ? poseCount : clipCount
+  const previewKeys = isFlipbook
+    ? Array.from({ length: poseCount }, (_, i) => ({ key: `flipbook${i + 1}`, label: `FRAME ${i + 1}` }))
+    : Array.from({ length: clipCount }, (_, i) => ({
+        key: `seedance${i + 1}`,
+        label: i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`,
+      }))
 
   return (
     <div style={{
@@ -395,7 +493,6 @@ export default function Home() {
         button:hover:not(:disabled) { opacity: 0.85; }
       `}</style>
 
-      {/* Header */}
       <div style={{ width: '100%', maxWidth: 640, paddingTop: 64, paddingBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
           <span style={{ fontSize: 10, letterSpacing: '0.25em', color: '#ff3c3c', fontWeight: 700 }}>▲ CLAWD</span>
@@ -416,7 +513,6 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Controls */}
       <div style={{ width: '100%', maxWidth: 640, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <ToggleGroup
           label="Music"
@@ -436,27 +532,54 @@ export default function Home() {
           onChange={setSelectedModel}
           disabled={isRunning}
         />
-        <ToggleGroup
-          label="Clips"
-          options={[1, 2, 3].map(n => ({ id: String(n), label: String(n) }))}
-          value={String(clipCount)}
-          onChange={v => setClipCount(Number(v))}
-          disabled={isRunning}
-        />
-        <ToggleGroup
-          label="Length"
-          options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
-          value={String(duration)}
-          onChange={v => setDuration(Number(v))}
-          disabled={isRunning}
-        />
+        {!isFlipbook && (
+          <ToggleGroup
+            label="Clips"
+            options={[1, 2, 3].map(n => ({ id: String(n), label: String(n) }))}
+            value={String(clipCount)}
+            onChange={v => setClipCount(Number(v))}
+            disabled={isRunning}
+          />
+        )}
+        {isFlipbook ? (
+          <ToggleGroup
+            label="Poses"
+            options={POSE_COUNTS.map(n => ({ id: String(n), label: String(n) }))}
+            value={String(poseCount)}
+            onChange={v => setPoseCount(Number(v))}
+            disabled={isRunning}
+          />
+        ) : clipCount >= 2 ? (
+          <>
+            <ToggleGroup
+              label="Build"
+              options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
+              value={String(buildDuration)}
+              onChange={v => setBuildDuration(Number(v))}
+              disabled={isRunning}
+            />
+            <ToggleGroup
+              label="Drop"
+              options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
+              value={String(dropDuration)}
+              onChange={v => setDropDuration(Number(v))}
+              disabled={isRunning}
+            />
+          </>
+        ) : (
+          <ToggleGroup
+            label="Length"
+            options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
+            value={String(duration)}
+            onChange={v => setDuration(Number(v))}
+            disabled={isRunning}
+          />
+        )}
         <div style={{ paddingLeft: 72, fontSize: 10, color: '#2a2a2a', letterSpacing: '0.1em' }}>
-          EST. <span style={{ color: '#ff3c3c' }}>{estCredits} CREDITS</span>
-          <span style={{ marginLeft: 12 }}>~{estMinutes} MIN</span>
+          ~{estMinutes} MIN
         </div>
       </div>
 
-      {/* Input card */}
       <div style={{ width: '100%', maxWidth: 640, marginBottom: 12 }}>
         <div style={{
           background: '#0d0d15',
@@ -464,7 +587,6 @@ export default function Home() {
           borderRadius: 6,
           overflow: 'hidden',
         }}>
-          {/* Goal */}
           <textarea
             value={goal}
             onChange={e => setGoal(e.target.value)}
@@ -485,7 +607,6 @@ export default function Home() {
 
           <div style={{ height: 1, background: '#111' }} />
 
-          {/* Image upload */}
           <div
             ref={dropRef}
             onDrop={handleDrop}
@@ -493,7 +614,7 @@ export default function Home() {
             style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 12 }}
           >
             {imagePreview ? (
-              <img src={styledPreview || imagePreview} style={{ width: 36, height: 36, borderRadius: 3, objectFit: 'cover', flexShrink: 0 }} />
+              <img src={styledPreview || imagePreview} alt="" style={{ width: 36, height: 36, borderRadius: 3, objectFit: 'cover', flexShrink: 0 }} />
             ) : (
               <div
                 style={{
@@ -515,39 +636,42 @@ export default function Home() {
               }}
             />
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f) }} />
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f).catch(err => setError(err.message)) }} />
           </div>
 
-          {/* Music mode fields */}
           {musicMode === 'my-song' && (
             <>
               <div style={{ height: 1, background: '#111' }} />
-              <div style={{ padding: '10px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ padding: '10px 18px', display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <input
-                    type="text" value={songName} onChange={e => setSongName(e.target.value)}
-                    placeholder="Song name (e.g. No Surprises by Radiohead)"
-                    disabled={isRunning}
-                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
-                  />
                   <button
-                    onClick={generateGoalFromSong}
-                    disabled={isRunning || generatingGoal || !songName.trim()}
+                    type="button"
+                    onClick={() => audioInputRef.current?.click()}
+                    disabled={isRunning}
                     style={{
                       background: 'transparent', border: '1px solid #222', borderRadius: 3,
-                      padding: '4px 10px', fontSize: 9, color: '#333', cursor: 'pointer',
+                      padding: '6px 12px', fontSize: 10, color: '#555', cursor: 'pointer',
                       fontFamily: 'inherit', letterSpacing: '0.1em', whiteSpace: 'nowrap',
                     }}
                   >
-                    {generatingGoal ? '...' : 'GEN GOAL'}
+                    {audioFileName ? 'CHANGE AUDIO' : 'UPLOAD AUDIO'}
                   </button>
+                  <span style={{ fontSize: 11, color: audioUrl ? '#666' : '#333', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {audioFileName || 'MP3, WAV, or M4A (max 20MB)'}
+                  </span>
                 </div>
-                <div style={{ height: 1, background: '#111' }} />
+                <p style={{ margin: 0, fontSize: 10, color: '#333', lineHeight: 1.5 }}>
+                  Please only upload audio you own or have rights to use.
+                </p>
                 <input
-                  type="text" value={moment} onChange={e => setMoment(e.target.value)}
-                  placeholder="Moment (e.g. when the glockenspiel drops)"
-                  disabled={isRunning}
-                  style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit', width: '100%' }}
+                  ref={audioInputRef}
+                  type="file"
+                  accept="audio/mpeg,audio/wav,audio/mp4,audio/x-m4a,.mp3,.wav,.m4a"
+                  style={{ display: 'none' }}
+                  onChange={e => {
+                    const f = e.target.files?.[0]
+                    if (f) handleAudioFile(f).catch(err => setError(err.message))
+                  }}
                 />
               </div>
             </>
@@ -569,18 +693,17 @@ export default function Home() {
 
           <div style={{ height: 1, background: '#111' }} />
 
-          {/* Footer */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 18px 14px' }}>
             <span style={{ fontSize: 10, color: '#222', letterSpacing: '0.1em' }}>⌘ + ENTER</span>
             <button
               onClick={runPipeline}
-              disabled={isRunning || !goal.trim()}
+              disabled={isRunning || !canDrop}
               style={{
-                background: isRunning ? '#111' : '#ff3c3c',
-                color: isRunning ? '#333' : '#fff',
+                background: isRunning || !canDrop ? '#111' : '#ff3c3c',
+                color: isRunning || !canDrop ? '#333' : '#fff',
                 border: 'none', borderRadius: 3, padding: '8px 22px',
                 fontSize: 11, fontWeight: 700, letterSpacing: '0.2em',
-                textTransform: 'uppercase', cursor: isRunning || !goal.trim() ? 'not-allowed' : 'pointer',
+                textTransform: 'uppercase', cursor: isRunning || !canDrop ? 'not-allowed' : 'pointer',
                 fontFamily: 'inherit',
               }}
             >
@@ -590,7 +713,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Pipeline progress */}
       {stage !== STAGES.IDLE && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 24 }}>
           <div style={{ display: 'flex', gap: 3, marginBottom: 16 }}>
@@ -621,7 +743,7 @@ export default function Home() {
               fontSize: 10, fontWeight: 700, letterSpacing: '0.2em',
               color: stage === STAGES.ERROR ? '#ff3c3c' : stage === STAGES.DONE ? '#3cff8f' : '#ff3c3c',
             }}>
-              {STAGE_LABELS[stage] || stage.toUpperCase()}
+              {isFlipbook && stage === STAGES.GENERATING_VIDEO ? 'GENERATING FRAMES' : (STAGE_LABELS[stage] || stage.toUpperCase())}
             </span>
           </div>
 
@@ -640,26 +762,21 @@ export default function Home() {
         </div>
       )}
 
-      {/* Styled preview */}
       {styledPreview && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 16 }}>
           <div style={{ background: '#080810', border: '1px solid #111', borderRadius: 4, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14 }}>
-            <img src={styledPreview} style={{ width: 52, height: 52, borderRadius: 3, objectFit: 'cover' }} />
+            <img src={styledPreview} alt="" style={{ width: 52, height: 52, borderRadius: 3, objectFit: 'cover' }} />
             <div>
               <div style={{ fontSize: 9, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 3 }}>▲ CHARACTER STYLED</div>
-              <div style={{ fontSize: 11, color: '#333' }}>Art style applied. Heading to Seedance.</div>
+              <div style={{ fontSize: 11, color: '#333' }}>{isFlipbook ? 'Art style applied. Generating frames.' : 'Art style applied. Heading to Seedance.'}</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Prompts */}
       {prompts && (
-        <div style={{ width: '100%', maxWidth: 640, marginBottom: 20, display: 'grid', gridTemplateColumns: `repeat(${Math.min(clipCount, 3)}, 1fr)`, gap: 6 }}>
-          {Array.from({ length: clipCount }, (_, i) => ({
-            key: `seedance${i + 1}`,
-            label: i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`,
-          })).map(({ key, label }) => (
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 20, display: 'grid', gridTemplateColumns: `repeat(${Math.min(previewCount, 3)}, 1fr)`, gap: 6 }}>
+          {previewKeys.map(({ key, label }) => (
             <div key={key} style={{ background: '#080810', border: '1px solid #111', borderRadius: 4, padding: '10px 12px' }}>
               <div style={{ fontSize: 8, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 6 }}>{label}</div>
               <div style={{ fontSize: 10, color: '#333', lineHeight: 1.6 }}>{prompts[key]?.slice(0, 100)}{prompts[key]?.length > 100 ? '...' : ''}</div>
@@ -668,7 +785,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Beat data */}
       {beatData && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 20, display: 'flex', gap: 6 }}>
           {[{ label: 'BPM', value: beatData.bpm }, { label: 'DROP', value: `${beatData.drop}s` }, { label: 'PEAK', value: `${beatData.peak}s` }, { label: 'ENERGY', value: beatData.energy?.toUpperCase() }].map(({ label, value }) => (
@@ -680,7 +796,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Output */}
       {stage === STAGES.DONE && videoUrl && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 40 }}>
           <div style={{ background: '#080810', border: '1px solid #3cff8f22', borderRadius: 6, padding: 20, textAlign: 'center' }}>
@@ -706,7 +821,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Error */}
       {stage === STAGES.ERROR && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 40, background: '#080810', border: '1px solid #ff3c3c22', borderRadius: 6, padding: 20 }}>
           <div style={{ fontSize: 10, color: '#ff3c3c', letterSpacing: '0.15em', marginBottom: 8 }}>✕ PIPELINE FAILED</div>
@@ -718,7 +832,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Footer */}
       <div style={{ width: '100%', maxWidth: 640, paddingBottom: 40, display: 'flex', justifyContent: 'center' }}>
         <a href="/terms" style={{ fontSize: 10, color: '#222', letterSpacing: '0.1em', textDecoration: 'none' }}>terms</a>
       </div>

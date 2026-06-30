@@ -3,7 +3,6 @@ import {
   pollVideoTask,
   submitVideoClipWithFallback,
   isVideoProvider,
-  PROVIDER_LABELS,
   type VideoProvider,
 } from '../../../lib/video-providers'
 
@@ -18,6 +17,7 @@ export async function POST(req: NextRequest) {
       beat,
       model,
       duration,
+      clipDurations,
       totalClips,
       provider = 'seedance',
     } = await req.json() as {
@@ -29,9 +29,14 @@ export async function POST(req: NextRequest) {
       beat?: { peak?: number }
       model: string
       duration: number
+      clipDurations?: number[]
       totalClips: number
       provider?: VideoProvider
     }
+
+    const durations: number[] = Array.isArray(clipDurations) && clipDurations.length === totalClips
+      ? clipDurations
+      : Array.from({ length: totalClips }, () => duration)
 
     const videoProvider: VideoProvider = isVideoProvider(provider) ? provider : 'seedance'
     const pollResult = await pollVideoTask(videoProvider, taskId)
@@ -48,12 +53,13 @@ export async function POST(req: NextRequest) {
       if (nextIndex < totalClips) {
         const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
         const nextImageUrl: string = lastFrameUrl ?? imageUrl
+        const nextDuration = durations[nextIndex] ?? duration
 
         const submitResult = await submitVideoClipWithFallback({
           prompt: nextPrompt,
           imageUrl: nextImageUrl,
-          model,
-          duration,
+          model: model === 'flipbook' ? 'seedance-2-0-fast' : model,
+          duration: nextDuration,
           returnLastFrame: nextIndex < totalClips - 1,
         })
 
@@ -76,11 +82,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (status === 'failed') {
-      throw new Error(`${PROVIDER_LABELS[videoProvider]} failed: status=${status}`)
+      throw new Error(`Video provider failed: status=${status}`)
     }
 
     return NextResponse.json({ status: status || 'processing', provider: videoProvider })
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Poll failed'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
