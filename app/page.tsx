@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import type { BeatAnalysisResult } from '../lib/beat-analysis'
 
 const STAGES = {
   IDLE: 'idle',
@@ -100,7 +101,7 @@ export default function Home() {
   const [duration, setDuration] = useState(8)
   const [stage, setStage] = useState(STAGES.IDLE)
   const [prompts, setPrompts] = useState<any>(null)
-  const [beatData, setBeatData] = useState<any>(null)
+  const [beatData, setBeatData] = useState<BeatAnalysisResult | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
@@ -205,14 +206,23 @@ export default function Home() {
       // STEP 4: Beat data
       setStage(STAGES.ANALYZING_AUDIO)
       addLog('Analyzing beat structure...')
-      let audioData = { bpm: 128, drop: duration * 0.55, peak: duration * 0.7, dropSeconds: duration * 0.55, peakSeconds: duration * 0.7, energy: 'high', source: 'fallback' }
+      let audioData: BeatAnalysisResult = {
+        bpm: 128,
+        drop: duration * 0.55,
+        peak: duration * 0.7,
+        dropSeconds: duration * 0.55,
+        peakSeconds: duration * 0.7,
+        energy: 'high',
+        source: 'fallback',
+        dropConfidence: 'low',
+      }
       if (musicMode === 'ai' && musicData.audioUrl) {
         const analyzeRes = await fetch('/api/analyze-audio', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ audioUrl: musicData.audioUrl, duration }),
         })
-        audioData = await analyzeRes.json()
+        audioData = (await analyzeRes.json()) as BeatAnalysisResult
       }
       setBeatData(audioData)
       addLog(
