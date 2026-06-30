@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { probeVideoUrl } from '../../../lib/video-metadata'
+import { metadataForClipDuration } from '../../../lib/video-metadata'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -12,11 +12,10 @@ function clipRole(i: number, total: number): string {
   return 'escalation'
 }
 
-async function buildClipList(clips: string[]): Promise<string> {
-  const metas = await Promise.all(clips.map(url => probeVideoUrl(url)))
+function buildClipList(clips: string[], clipDuration = 8): string {
+  const meta = metadataForClipDuration(clipDuration)
   return clips
     .map((url, i) => {
-      const meta = metas[i]
       return `Clip ${i + 1} (${clipRole(i, clips.length)}): ${url} — ${meta.durationSeconds}s, ${meta.fps}fps, ${meta.frameCount} frames`
     })
     .join('\n')
@@ -26,12 +25,18 @@ export async function POST(req: NextRequest) {
   let rawVideoUrl = null
   try {
     const body = await req.json()
-    const { clips, musicMode, songName, moment, vibeDescription, beat, audioUrl } = body
+    const { clips, musicMode, songName, moment, vibeDescription, beat, audioUrl, clipDuration } = body
     rawVideoUrl = clips?.[0]
 
     if (!clips || clips.length === 0) throw new Error('No clips provided')
 
-    const clipList = await buildClipList(clips)
+    const durationSec = typeof clipDuration === 'number' ? clipDuration : 8
+    // #region agent log
+    console.log('[sync-video] start', { clipCount: clips.length, clipDuration: durationSec, musicMode })
+    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'app/api/sync-video/route.ts:POST',message:'sync start',data:{clipCount:clips.length,clipDuration:durationSec,musicMode},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+    // #endregion
+
+    const clipList = buildClipList(clips, durationSec)
     const durationNote =
       'Clip durations are provided above — loop or trim clips to fit the audio without re-probing duration.'
 
@@ -47,6 +52,10 @@ export async function POST(req: NextRequest) {
       content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nAudio track URL: ${audioUrl}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
     }
 
+    // #region agent log
+    console.log('[sync-video] calling Manus task.create')
+    // #endregion
+
     const taskRes = await fetch(MANUS_BASE + '/v2/task.create', {
       method: 'POST',
       headers: {
@@ -56,12 +65,28 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({ message: { content } }),
     })
 
-    const taskData = await taskRes.json()
+    const taskText = await taskRes.text()
+    let taskData: { ok?: boolean; task_id?: string; error?: string }
+    try {
+      taskData = JSON.parse(taskText)
+    } catch {
+      throw new Error(`Manus returned non-JSON (${taskRes.status}): ${taskText.slice(0, 200)}`)
+    }
+
+    // #region agent log
+    console.log('[sync-video] manus response', { ok: taskData.ok, status: taskRes.status, hasTaskId: !!taskData.task_id })
+    fetch('http://127.0.0.1:7360/ingest/e706df41-42db-4fc9-8faf-adc2def9c83f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a1de77'},body:JSON.stringify({sessionId:'a1de77',location:'app/api/sync-video/route.ts:POST',message:'manus response',data:{ok:taskData.ok,status:taskRes.status,hasTaskId:!!taskData.task_id},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+    // #endregion
+
     if (!taskData.ok) throw new Error('Manus task creation failed: ' + JSON.stringify(taskData))
 
     return NextResponse.json({ taskId: taskData.task_id, rawVideoUrl })
 
-  } catch (err: any) {
-    return NextResponse.json({ videoUrl: rawVideoUrl, error: err.message }, { status: 500 })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Sync failed'
+    // #region agent log
+    console.error('[sync-video] error', message)
+    // #endregion
+    return NextResponse.json({ videoUrl: rawVideoUrl, error: message }, { status: 500 })
   }
 }

@@ -329,9 +329,16 @@ export default function Home() {
               moment: musicMode === 'my-song' ? moment : null,
               vibeDescription: musicMode === 'find-song' ? vibeDescription : null,
               beat: audioData,
+              clipDuration: duration,
             }),
           })
-          const syncJobData = await syncRes.json()
+          const syncText = await syncRes.text()
+          let syncJobData: { taskId?: string; rawVideoUrl?: string; error?: string }
+          try {
+            syncJobData = JSON.parse(syncText)
+          } catch {
+            throw new Error(`Sync failed (${syncRes.status}): ${syncText.slice(0, 200)}`)
+          }
           if (syncJobData.error) throw new Error(syncJobData.error)
           addLog('Manus task submitted. Syncing...')
 
