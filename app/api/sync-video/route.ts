@@ -6,7 +6,7 @@ export async function POST(req: NextRequest) {
   let rawVideoUrl = null
   try {
     const body = await req.json()
-    const { clips, musicMode, songName, moment, vibeDescription, beat } = body
+    const { clips, musicMode, songName, moment, vibeDescription, beat, audioUrl } = body
     rawVideoUrl = clips?.[0]
 
     if (!clips || clips.length === 0) throw new Error('No clips provided')
@@ -22,8 +22,8 @@ export async function POST(req: NextRequest) {
     } else if (musicMode === 'find-song') {
       content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nAnalyze these clips carefully. Identify the energy arc — the buildup, the release, the key action moments. Use the energy transfer framework: find the potential energy (buildup), kinetic release (impact), and absorption (reaction). The vibe described is: "${vibeDescription || 'match the visual energy of the clips'}". Based on this analysis, find a song on SoundCloud or YouTube that perfectly matches this energy and vibe. Download the full audio. Find the exact moment in the song that best matches the key visual action. Cut between clips at that moment. Apply VFX — brightness flash, RGB split glitch, screen shake. Apply slow-mo to build clip, speed ramp into drop. Export as MP4 and return only the final URL.`
     } else {
-      // AUTO mode — Manus just reviews and polishes
-      content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nReview these clips and cut them together at the most impactful moment around second ${beat?.drop || 2}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Return only the final MP4 URL.`
+      if (!audioUrl) throw new Error('No audio URL provided for AI music mode')
+      content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\nAudio track URL: ${audioUrl}\n\nDownload this audio and sync the clips to it. Cut between clips at the most impactful moment around second ${beat?.drop || 2}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
     }
 
     const taskRes = await fetch(MANUS_BASE + '/v2/task.create', {

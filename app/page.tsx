@@ -97,7 +97,7 @@ export default function Home() {
   const [styledPreview, setStyledPreview] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState('seedance-2-0-fast')
   const [clipCount, setClipCount] = useState(2)
-  const [duration, setDuration] = useState(5)
+  const [duration, setDuration] = useState(8)
   const [stage, setStage] = useState(STAGES.IDLE)
   const [prompts, setPrompts] = useState<any>(null)
   const [beatData, setBeatData] = useState<any>(null)
@@ -283,6 +283,7 @@ export default function Home() {
             body: JSON.stringify({
               clips: completedClips,
               musicMode,
+              audioUrl: musicMode === 'ai' ? musicData.audioUrl : null,
               songName: musicMode === 'my-song' ? songName : null,
               moment: musicMode === 'my-song' ? moment : null,
               vibeDescription: musicMode === 'find-song' ? vibeDescription : null,
