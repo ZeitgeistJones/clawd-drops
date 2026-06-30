@@ -1,3 +1,5 @@
+import Meyda from 'meyda'
+
 export type BeatAnalysisResult = {
   bpm: number
   dropSeconds: number
@@ -6,12 +8,18 @@ export type BeatAnalysisResult = {
   peak: number
   energy: 'low' | 'medium' | 'high' | 'extreme'
   source: 'essentia.js' | 'rms' | 'fallback'
+  dropConfidence: 'high' | 'low'
+  dropFlagged?: boolean
+  meydaLoudestSeconds?: number
 }
 
 const TARGET_SAMPLE_RATE = 44100
 const MAX_ANALYZE_SECONDS = 60
 const WINDOW_SEC = 0.1
 const BASELINE_SEC = 2
+const MEYDA_BUFFER_SIZE = 2048
+const MEYDA_HOP_SIZE = 512
+const DROP_AGREEMENT_SEC = 0.5
 
 export function fallbackBeatAnalysis(duration = 8): BeatAnalysisResult {
   const dropSeconds = Math.round(duration * 0.55 * 10) / 10
@@ -24,6 +32,7 @@ export function fallbackBeatAnalysis(duration = 8): BeatAnalysisResult {
     peak: peakSeconds,
     energy: 'high',
     source: 'fallback',
+    dropConfidence: 'low',
   }
 }
 
@@ -110,6 +119,56 @@ function energyFromRms(maxRms: number): BeatAnalysisResult['energy'] {
   return 'extreme'
 }
 
+export function findLoudestMeydaSeconds(signal: Float32Array, sampleRate: number): number {
+  Meyda.bufferSize = MEYDA_BUFFER_SIZE
+  Meyda.sampleRate = sampleRate
+
+  let maxRms = -Infinity
+  let loudestSeconds = 0
+
+  for (let start = 0; start + MEYDA_BUFFER_SIZE <= signal.length; start += MEYDA_HOP_SIZE) {
+    const frame = signal.slice(start, start + MEYDA_BUFFER_SIZE)
+    const features = Meyda.extract('rms', frame) as { rms?: number } | number | null
+    const rms = typeof features === 'number' ? features : features?.rms ?? 0
+    if (rms > maxRms) {
+      maxRms = rms
+      loudestSeconds = (start + MEYDA_BUFFER_SIZE / 2) / sampleRate
+    }
+  }
+
+  if (maxRms === -Infinity) return 0
+  return Math.round(loudestSeconds * 10) / 10
+}
+
+export function confirmDropWithMeyda(
+  essentiaDropSeconds: number,
+  signal: Float32Array,
+  sampleRate: number
+): {
+  dropSeconds: number
+  meydaLoudestSeconds: number
+  dropConfidence: BeatAnalysisResult['dropConfidence']
+  dropFlagged?: boolean
+} {
+  const meydaLoudestSeconds = findLoudestMeydaSeconds(signal, sampleRate)
+  const agrees = Math.abs(meydaLoudestSeconds - essentiaDropSeconds) <= DROP_AGREEMENT_SEC
+
+  if (agrees) {
+    return {
+      dropSeconds: essentiaDropSeconds,
+      meydaLoudestSeconds,
+      dropConfidence: 'high',
+    }
+  }
+
+  return {
+    dropSeconds: essentiaDropSeconds,
+    meydaLoudestSeconds,
+    dropConfidence: 'low',
+    dropFlagged: true,
+  }
+}
+
 export function deriveDropAndPeak(
   signal: Float32Array,
   sampleRate: number,
@@ -161,6 +220,26 @@ export function deriveDropAndPeak(
   }
 }
 
+function buildBeatResult(
+  derived: ReturnType<typeof deriveDropAndPeak>,
+  resampled: Float32Array,
+  source: BeatAnalysisResult['source']
+): BeatAnalysisResult {
+  const confirmation = confirmDropWithMeyda(derived.dropSeconds, resampled, TARGET_SAMPLE_RATE)
+  return {
+    bpm: derived.bpm,
+    dropSeconds: confirmation.dropSeconds,
+    peakSeconds: derived.peakSeconds,
+    drop: confirmation.dropSeconds,
+    peak: derived.peakSeconds,
+    energy: derived.energy,
+    source,
+    dropConfidence: confirmation.dropConfidence,
+    ...(confirmation.dropFlagged ? { dropFlagged: true } : {}),
+    meydaLoudestSeconds: confirmation.meydaLoudestSeconds,
+  }
+}
+
 export function analyzeBeatWithRms(
   signal: Float32Array,
   sampleRate: number,
@@ -169,15 +248,7 @@ export function analyzeBeatWithRms(
   const trimmed = trimSignal(signal, sampleRate)
   const resampled = resampleTo44100(trimmed, sampleRate)
   const derived = deriveDropAndPeak(resampled, TARGET_SAMPLE_RATE, beatTicks)
-  return {
-    bpm: derived.bpm,
-    dropSeconds: derived.dropSeconds,
-    peakSeconds: derived.peakSeconds,
-    drop: derived.dropSeconds,
-    peak: derived.peakSeconds,
-    energy: derived.energy,
-    source: beatTicks.length ? 'essentia.js' : 'rms',
-  }
+  return buildBeatResult(derived, resampled, beatTicks.length ? 'essentia.js' : 'rms')
 }
 
 export async function analyzeBeatWithEssentia(
@@ -196,15 +267,7 @@ export async function analyzeBeatWithEssentia(
     essentia.delete(vector)
 
     const derived = deriveDropAndPeak(resampled, TARGET_SAMPLE_RATE, ticks)
-    return {
-      bpm: derived.bpm,
-      dropSeconds: derived.dropSeconds,
-      peakSeconds: derived.peakSeconds,
-      drop: derived.dropSeconds,
-      peak: derived.peakSeconds,
-      energy: derived.energy,
-      source: 'essentia.js',
-    }
+    return buildBeatResult(derived, resampled, 'essentia.js')
   } catch {
     return null
   }

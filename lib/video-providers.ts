@@ -35,6 +35,16 @@ const HYPEREAL_JOBS_URL = 'https://api.hypereal.ai/v1/jobs'
 const DEAPI_ANIMATIONS_URL = 'https://api.deapi.ai/api/v2/videos/animations'
 const DEAPI_JOBS_URL = 'https://api.deapi.ai/api/v2/jobs'
 const REPLICATE_PREDICTIONS_URL = 'https://api.replicate.com/v1/models/wan-video/wan-2.2-i2v-fast/predictions'
+const MAGIC_HOUR_UPLOAD_URL = 'https://api.magichour.ai/v1/files/upload-urls'
+
+const PROVIDER_ENV_KEYS: Record<VideoProvider, string> = {
+  seedance: 'SEEDANCE_API_KEY',
+  wavespeed: 'WAVESPEED_API_KEY',
+  magichour: 'MAGIC_HOUR_KEY',
+  hypereal: 'HYPEREAL_API_KEY',
+  deapi: 'DEAPI_KEY',
+  replicate: 'REPLICATE_API_KEY',
+}
 
 type ClipOpts = {
   prompt: string
@@ -80,33 +90,93 @@ function deapiFrames(duration: number): number {
   return duration <= 5 ? 121 : 193
 }
 
-function authHeader(key: string | undefined, prefix = 'Bearer') {
+function getProviderApiKey(provider: VideoProvider): string | undefined {
+  const value = process.env[PROVIDER_ENV_KEYS[provider]]
+  return value?.trim() || undefined
+}
+
+function authHeader(key: string | undefined, prefix = 'Bearer'): Record<string, string> {
+  if (!key) return {}
   return { Authorization: `${prefix} ${key}` }
 }
 
+async function parseJsonResponse(res: Response): Promise<unknown> {
+  const text = await res.text()
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { message: text.slice(0, 500) }
+  }
+}
+
+function imageExtensionFromContentType(contentType: string): string {
+  if (contentType.includes('png')) return 'png'
+  if (contentType.includes('webp')) return 'webp'
+  if (contentType.includes('gif')) return 'gif'
+  return 'jpg'
+}
+
+async function uploadMagicHourImage(imageUrl: string): Promise<string | null> {
+  const imageRes = await fetch(imageUrl)
+  if (!imageRes.ok) return null
+
+  const buffer = await imageRes.arrayBuffer()
+  const contentType = imageRes.headers.get('content-type') || 'image/jpeg'
+  const extension = imageExtensionFromContentType(contentType)
+
+  const uploadRes = await fetch(MAGIC_HOUR_UPLOAD_URL, {
+    method: 'POST',
+    headers: {
+      ...authHeader(getProviderApiKey('magichour')),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      items: [{ type: 'image', extension }],
+    }),
+  })
+  const uploadData = (await parseJsonResponse(uploadRes)) as {
+    items?: { upload_url?: string; file_path?: string }[]
+  }
+  const item = uploadData.items?.[0]
+  if (!item?.upload_url || !item?.file_path) return null
+
+  const putRes = await fetch(item.upload_url, {
+    method: 'PUT',
+    headers: { 'Content-Type': contentType },
+    body: buffer,
+  })
+  if (!putRes.ok) return null
+
+  return item.file_path
+}
+
 export async function submitSeedanceClip(opts: ClipOpts): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('seedance')
+  if (!apiKey) return { error: 'SEEDANCE_API_KEY not configured' }
+
   const res = await fetch(SEEDANCE_GENERATIONS_URL, {
     method: 'POST',
     headers: {
-      ...authHeader(process.env.SEEDANCE_API_KEY),
+      ...authHeader(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       model: opts.model,
       input: {
         prompt: opts.prompt,
-        generation_type: 'reference-to-video',
+        generation_type: 'image-to-video',
         image_urls: [opts.imageUrl],
         duration: opts.duration,
         resolution: '480p',
         watermark: false,
-        generate_audio: true,
+        generate_audio: false,
         return_last_frame: opts.returnLastFrame,
       },
     }),
   })
-  const data = await res.json()
-  const taskId = data.taskId || data.id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const taskId = (data.taskId || data.id) as string | undefined
   if (taskId) return { taskId }
 
   return {
@@ -120,10 +190,13 @@ export async function submitWaveSpeedClip(opts: {
   imageUrl: string
   duration: number
 }): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('wavespeed')
+  if (!apiKey) return { error: 'WAVESPEED_API_KEY not configured' }
+
   const res = await fetch(WAVESPEED_SUBMIT_URL, {
     method: 'POST',
     headers: {
-      ...authHeader(process.env.WAVESPEED_API_KEY),
+      ...authHeader(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -134,8 +207,9 @@ export async function submitWaveSpeedClip(opts: {
       seed: -1,
     }),
   })
-  const data = await res.json()
-  const taskId = data.data?.id || data.id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const nested = data.data as Record<string, unknown> | undefined
+  const taskId = (nested?.id || data.id) as string | undefined
   if (taskId) return { taskId }
 
   return { error: JSON.stringify(data) }
@@ -146,10 +220,18 @@ export async function submitMagicHourClip(opts: {
   imageUrl: string
   duration: number
 }): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('magichour')
+  if (!apiKey) return { error: 'MAGIC_HOUR_KEY not configured' }
+
+  const imageFilePath = await uploadMagicHourImage(opts.imageUrl)
+  if (!imageFilePath) {
+    return { error: 'Failed to upload image to Magic Hour storage' }
+  }
+
   const res = await fetch(MAGIC_HOUR_SUBMIT_URL, {
     method: 'POST',
     headers: {
-      ...authHeader(process.env.MAGIC_HOUR_KEY),
+      ...authHeader(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -157,15 +239,15 @@ export async function submitMagicHourClip(opts: {
       end_seconds: magicHourDuration(opts.duration),
       model: 'seedance-2.0',
       resolution: '480p',
-      audio: true,
+      audio: false,
       style: { prompt: opts.prompt },
       assets: {
-        image_file_path: opts.imageUrl,
+        image_file_path: imageFilePath,
       },
     }),
   })
-  const data = await res.json()
-  const taskId = data.id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const taskId = data.id as string | undefined
   if (taskId) return { taskId }
 
   return { error: JSON.stringify(data) }
@@ -176,10 +258,13 @@ export async function submitHyperealClip(opts: {
   imageUrl: string
   duration: number
 }): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('hypereal')
+  if (!apiKey) return { error: 'HYPEREAL_API_KEY not configured' }
+
   const res = await fetch(HYPEREAL_SUBMIT_URL, {
     method: 'POST',
     headers: {
-      ...authHeader(process.env.HYPEREAL_API_KEY),
+      ...authHeader(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -189,8 +274,9 @@ export async function submitHyperealClip(opts: {
       duration: magicHourDuration(opts.duration),
     }),
   })
-  const data = await res.json()
-  const taskId = data.jobId || data.id || data.data?.id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const nested = data.data as Record<string, unknown> | undefined
+  const taskId = (data.jobId || data.id || nested?.id) as string | undefined
   if (taskId) return { taskId }
 
   return { error: JSON.stringify(data) }
@@ -201,6 +287,9 @@ export async function submitDeapiClip(opts: {
   imageUrl: string
   duration: number
 }): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('deapi')
+  if (!apiKey) return { error: 'DEAPI_KEY not configured' }
+
   const imageRes = await fetch(opts.imageUrl)
   if (!imageRes.ok) return { error: `Failed to fetch image for deAPI: ${imageRes.status}` }
 
@@ -219,11 +308,12 @@ export async function submitDeapiClip(opts: {
 
   const res = await fetch(DEAPI_ANIMATIONS_URL, {
     method: 'POST',
-    headers: authHeader(process.env.DEAPI_KEY),
+    headers: authHeader(apiKey),
     body: form,
   })
-  const data = await res.json()
-  const taskId = data.data?.request_id || data.request_id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const nested = data.data as Record<string, unknown> | undefined
+  const taskId = (nested?.request_id || data.request_id) as string | undefined
   if (taskId) return { taskId }
 
   return { error: JSON.stringify(data) }
@@ -234,10 +324,13 @@ export async function submitReplicateClip(opts: {
   imageUrl: string
   duration: number
 }): Promise<SubmitResult> {
+  const apiKey = getProviderApiKey('replicate')
+  if (!apiKey) return { error: 'REPLICATE_API_KEY not configured' }
+
   const res = await fetch(REPLICATE_PREDICTIONS_URL, {
     method: 'POST',
     headers: {
-      ...authHeader(process.env.REPLICATE_API_KEY),
+      ...authHeader(apiKey),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -248,8 +341,8 @@ export async function submitReplicateClip(opts: {
       },
     }),
   })
-  const data = await res.json()
-  const taskId = data.id
+  const data = (await parseJsonResponse(res)) as Record<string, unknown>
+  const taskId = data.id as string | undefined
   if (taskId) return { taskId }
 
   return { error: JSON.stringify(data) }
@@ -261,7 +354,7 @@ export async function pollSeedanceTask(taskId: string): Promise<{
   lastFrameUrl?: string
 }> {
   const res = await fetch(`${SEEDANCE_TASKS_URL}/${taskId}`, {
-    headers: authHeader(process.env.SEEDANCE_API_KEY),
+    headers: authHeader(getProviderApiKey('seedance')),
   })
   const data = await res.json()
   const rawStatus = data.status || data.data?.status || 'processing'
@@ -279,7 +372,7 @@ export async function pollWaveSpeedTask(taskId: string): Promise<{
   videoUrl?: string
 }> {
   const res = await fetch(`${WAVESPEED_RESULT_URL}/${taskId}/result`, {
-    headers: authHeader(process.env.WAVESPEED_API_KEY),
+    headers: authHeader(getProviderApiKey('wavespeed')),
   })
   const data = await res.json()
   const rawStatus = data.data?.status || data.status || 'processing'
@@ -296,7 +389,7 @@ export async function pollMagicHourTask(taskId: string): Promise<{
   videoUrl?: string
 }> {
   const res = await fetch(`${MAGIC_HOUR_PROJECT_URL}/${taskId}`, {
-    headers: authHeader(process.env.MAGIC_HOUR_KEY),
+    headers: authHeader(getProviderApiKey('magichour')),
   })
   const data = await res.json()
   const rawStatus = data.status || 'processing'
@@ -313,7 +406,7 @@ export async function pollHyperealTask(taskId: string): Promise<{
   videoUrl?: string
 }> {
   const res = await fetch(`${HYPEREAL_JOBS_URL}/${taskId}`, {
-    headers: authHeader(process.env.HYPEREAL_API_KEY),
+    headers: authHeader(getProviderApiKey('hypereal')),
   })
   const data = await res.json()
   const rawStatus = data.status || 'processing'
@@ -332,7 +425,7 @@ export async function pollDeapiTask(taskId: string): Promise<{
   videoUrl?: string
 }> {
   const res = await fetch(`${DEAPI_JOBS_URL}/${taskId}`, {
-    headers: authHeader(process.env.DEAPI_KEY),
+    headers: authHeader(getProviderApiKey('deapi')),
   })
   const data = await res.json()
   const job = data.data || data
@@ -349,7 +442,7 @@ export async function pollReplicateTask(taskId: string): Promise<{
   videoUrl?: string
 }> {
   const res = await fetch(`https://api.replicate.com/v1/predictions/${taskId}`, {
-    headers: authHeader(process.env.REPLICATE_API_KEY),
+    headers: authHeader(getProviderApiKey('replicate')),
   })
   const data = await res.json()
   const rawStatus = data.status || 'processing'
@@ -413,17 +506,22 @@ export async function submitVideoClip(
 export async function submitVideoClipWithFallback(
   opts: ClipOpts,
   forceProvider?: VideoProvider
-): Promise<{ taskId: string; provider: VideoProvider } | { error: string }> {
+): Promise<{ taskId: string; provider: VideoProvider } | { error: string; providerErrors: string[] }> {
   const providers = forceProvider ? [forceProvider] : VIDEO_PROVIDER_CHAIN
   const errors: string[] = []
 
   for (const provider of providers) {
-    const result = await submitVideoClip(provider, opts)
-    if ('taskId' in result) {
-      return { taskId: result.taskId, provider }
+    try {
+      const result = await submitVideoClip(provider, opts)
+      if ('taskId' in result) {
+        return { taskId: result.taskId, provider }
+      }
+      errors.push(`${PROVIDER_LABELS[provider]}: ${result.error}`)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      errors.push(`${PROVIDER_LABELS[provider]}: ${message}`)
     }
-    errors.push(`${PROVIDER_LABELS[provider]}: ${result.error}`)
   }
 
-  return { error: errors.join('; ') }
+  return { error: errors.join('; '), providerErrors: errors }
 }

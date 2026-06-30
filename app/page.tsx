@@ -218,7 +218,11 @@ export default function Home() {
       addLog(
         audioData.source === 'fallback'
           ? 'Beat analysis fallback — using estimates.'
-          : `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
+          : audioData.dropFlagged
+            ? `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s (Meyda peak at ${audioData.meydaLoudestSeconds}s — using Essentia) | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
+            : audioData.dropConfidence === 'high'
+              ? `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s (confirmed) | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
+              : `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
       )
 
       // STEP 5: Style character
@@ -256,7 +260,12 @@ export default function Home() {
         }),
       })
       const videoJobData = await videoRes.json()
-      if (videoJobData.error) throw new Error(videoJobData.error)
+      if (videoJobData.error) {
+        const detail = videoJobData.providerErrors?.length
+          ? `${videoJobData.error}: ${videoJobData.providerErrors.join(' | ')}`
+          : videoJobData.error
+        throw new Error(detail)
+      }
 
       let completedClips: string[] = []
       let currentTaskId = videoJobData.taskId1

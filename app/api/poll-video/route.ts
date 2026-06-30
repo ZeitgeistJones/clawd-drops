@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
   pollVideoTask,
-  submitVideoClip,
+  submitVideoClipWithFallback,
   isVideoProvider,
   PROVIDER_LABELS,
   type VideoProvider,
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
         const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
         const nextImageUrl: string = lastFrameUrl ?? imageUrl
 
-        const submitResult = await submitVideoClip(videoProvider, {
+        const submitResult = await submitVideoClipWithFallback({
           prompt: nextPrompt,
           imageUrl: nextImageUrl,
           model,
@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
 
         if (!('taskId' in submitResult)) {
           throw new Error(
-            `Clip ${nextIndex + 1} failed (${PROVIDER_LABELS[videoProvider]}): ${submitResult.error}`
+            `Clip ${nextIndex + 1} failed on all providers: ${submitResult.error}`
           )
         }
 
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
           completedClips: newCompletedClips,
           nextTaskId: submitResult.taskId,
           nextClipIndex: nextIndex + 1,
-          provider: videoProvider,
+          provider: submitResult.provider,
         })
       }
 
