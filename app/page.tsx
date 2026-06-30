@@ -178,12 +178,19 @@ export default function Home() {
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
 
       // STEP 3: Music (AI mode only)
-      const musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
-      if (musicMode === 'ai') {
-        setStage(STAGES.GENERATING_MUSIC)
-        addLog('Cooking the beat...')
-        addLog('Beat dropped.')
-      }
+     let musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
+if (musicMode === 'ai') {
+  setStage(STAGES.GENERATING_MUSIC)
+  addLog('Searching for matching instrumental...')
+  const musicRes = await fetch('/api/generate-music', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mood: promptData.style || goal }),
+  })
+  const musicResult = await musicRes.json()
+  musicData = { audioUrl: musicResult.audioUrl }
+  addLog(musicResult.source === 'freesound' ? `Found: ${musicResult.title}` : 'Using fallback track.')
+}
 
       // STEP 4: Beat data
       setStage(STAGES.ANALYZING_AUDIO)
