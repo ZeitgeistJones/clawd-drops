@@ -2,7 +2,7 @@ import { writeFile, unlink } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
-import { FFprobeWorker } from 'ffprobe-wasm'
+import { FFprobeWorker, type FileInfo, type Stream } from 'ffprobe-wasm'
 
 export type VideoMetadata = {
   durationSeconds: number
@@ -27,7 +27,7 @@ export function fallbackVideoMetadata(durationSeconds = 8): VideoMetadataWithFal
   }
 }
 
-function parseFrameRate(value: unknown): number {
+function parseFrameRate(value: string | number | undefined): number {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
   if (typeof value === 'string') {
     const parts = value.split('/')
@@ -42,25 +42,18 @@ function parseFrameRate(value: unknown): number {
   return 24
 }
 
-function pickVideoStream(streams: unknown[]): Record<string, unknown> | null {
-  if (!Array.isArray(streams)) return null
+function pickVideoStream(streams: Stream[]): Stream | null {
   for (const stream of streams) {
-    if (!stream || typeof stream !== 'object') continue
-    const s = stream as Record<string, unknown>
-    if (s.codec_type === 'video' || (typeof s.width === 'number' && s.width > 0)) return s
+    if (stream.codec_type === 'video' || stream.width > 0) return stream
   }
-  for (const stream of streams) {
-    if (stream && typeof stream === 'object') return stream as Record<string, unknown>
-  }
-  return null
+  return streams[0] ?? null
 }
 
-function parseFileInfo(fileInfo: Record<string, unknown>): VideoMetadataWithFallback {
-  const format = (fileInfo.format ?? {}) as Record<string, unknown>
-  const stream = pickVideoStream(fileInfo.streams as unknown[] ?? [])
+function parseFileInfo(fileInfo: FileInfo): VideoMetadataWithFallback {
+  const stream = pickVideoStream(fileInfo.streams ?? [])
 
-  const formatDuration = parseFloat(String(format.duration ?? ''))
-  const streamDuration = parseFloat(String(stream?.duration ?? ''))
+  const formatDuration = parseFloat(fileInfo.format?.duration ?? '')
+  const streamDuration = parseFloat(stream?.duration ?? '')
 
   const durationSeconds = Math.round(
     (Number.isFinite(formatDuration) && formatDuration > 0
@@ -74,7 +67,7 @@ function parseFileInfo(fileInfo: Record<string, unknown>): VideoMetadataWithFall
     parseFrameRate(stream?.avg_frame_rate ?? stream?.r_frame_rate) * 100
   ) / 100
 
-  const nbFrames = parseInt(String(stream?.nb_frames ?? ''), 10)
+  const nbFrames = parseInt(stream?.nb_frames ?? '', 10)
   const frameCount =
     Number.isFinite(nbFrames) && nbFrames > 0
       ? nbFrames
@@ -100,7 +93,7 @@ export async function probeVideoUrl(videoUrl: string): Promise<VideoMetadataWith
     await writeFile(tempPath, Buffer.from(buffer))
 
     worker = new FFprobeWorker()
-    const fileInfo = (await worker.getFileInfo(tempPath)) as Record<string, unknown>
+    const fileInfo = await worker.getFileInfo(tempPath)
     return parseFileInfo(fileInfo)
   } catch {
     return fallbackVideoMetadata()
