@@ -1,81 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server'
+import {
+  submitSeedanceClip,
+  submitWaveSpeedClip,
+  type VideoProvider,
+} from '../../../lib/video-providers'
+
+export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   try {
-    const { videoUrl } = await req.json()
+    const {
+      prompts,
+      imageUrl,
+      beat,
+      model = 'seedance-2-0-fast',
+      duration = 5,
+      forceProvider,
+    } = await req.json()
+    const safeBeat = beat || { drop: 2.0, peak: 3.5 }
 
-    const videoRes = await fetch(videoUrl)
-    if (!videoRes.ok) throw new Error('Failed to fetch video for analysis')
-    const videoBuffer = await videoRes.arrayBuffer()
-    const base64Video = Buffer.from(videoBuffer).toString('base64')
+    const firstPrompt = `${prompts[0]} @Image1 is the character reference. Slow atmospheric build, tension rising.`
+    const totalClips = prompts.length
+    let provider: VideoProvider = 'seedance'
+    let taskId1: string | undefined
+    let seedanceError: string | undefined
 
-    const apiKey = process.env.GOOGLE_VIDEO_INTELLIGENCE_API_KEY
-
-    const annotateRes = await fetch(
-      `https://videointelligence.googleapis.com/v1/videos:annotate?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          inputContent: base64Video,
-          features: ['SHOT_CHANGE_DETECTION', 'LABEL_DETECTION'],
-        }),
+    if (forceProvider === 'wavespeed') {
+      const wsResult = await submitWaveSpeedClip({ prompt: firstPrompt, imageUrl, duration })
+      if ('taskId' in wsResult) {
+        provider = 'wavespeed'
+        taskId1 = wsResult.taskId
+      } else {
+        throw new Error('WaveSpeed clip 1 failed: ' + wsResult.error)
       }
-    )
+    } else {
+      const sdResult = await submitSeedanceClip({
+        prompt: firstPrompt,
+        imageUrl,
+        model,
+        duration,
+        returnLastFrame: true,
+      })
 
-    if (!annotateRes.ok) {
-      const errText = await annotateRes.text()
-      throw new Error('Video Intelligence request failed: ' + errText)
-    }
-
-    const operation = await annotateRes.json()
-    const operationName = operation.name
-    if (!operationName) throw new Error('No operation name returned')
-
-    let result = null
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 3000))
-      const pollRes = await fetch(
-        `https://videointelligence.googleapis.com/v1/${operationName}?key=${apiKey}`
-      )
-      const pollData = await pollRes.json()
-      if (pollData.done) {
-        result = pollData.response
-        break
+      if ('taskId' in sdResult) {
+        taskId1 = sdResult.taskId
+      } else {
+        seedanceError = sdResult.error
+        const wsResult = await submitWaveSpeedClip({ prompt: firstPrompt, imageUrl, duration })
+        if ('taskId' in wsResult) {
+          provider = 'wavespeed'
+          taskId1 = wsResult.taskId
+        } else {
+          throw new Error(
+            `Clip 1 failed on both providers. Seedance: ${seedanceError}. WaveSpeed: ${wsResult.error}`
+          )
+        }
       }
     }
 
-    if (!result) throw new Error('Video analysis timed out')
-
-    const annotations = result.annotationResults?.[0]
-    const shots = annotations?.shotAnnotations || []
-    const labels = annotations?.shotLabelAnnotations || []
-
-    let peakTimestamp = null
-    if (shots.length > 1) {
-      const secondShot = shots[1]
-      const seconds = parseFloat(secondShot.startTimeOffset?.seconds || '0')
-      const nanos = parseFloat(secondShot.startTimeOffset?.nanos || '0') / 1e9
-      peakTimestamp = seconds + nanos
-    }
-
-    const topLabels = labels
-      .slice(0, 5)
-      .map((l: any) => l.entity?.description)
-      .filter(Boolean)
+    if (!taskId1) throw new Error('Clip 1 failed: no task ID returned')
 
     return NextResponse.json({
-      peakTimestamp,
-      shotCount: shots.length,
-      labels: topLabels,
-      source: 'google-video-intelligence',
+      taskId1,
+      provider,
+      prompts,
+      imageUrl,
+      beat: safeBeat,
+      model,
+      duration,
+      totalClips,
     })
-
   } catch (err: any) {
-    return NextResponse.json({
-      peakTimestamp: null,
-      error: err.message,
-      source: 'fallback',
-    })
+    return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }

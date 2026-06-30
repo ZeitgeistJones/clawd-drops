@@ -1,17 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
+import {
+  pollVideoTask,
+  submitVideoClip,
+  type VideoProvider,
+} from '../../../lib/video-providers'
 
 export async function POST(req: NextRequest) {
   try {
-    const { taskId, completedClips = [], nextClipIndex, prompts, imageUrl, beat, model, duration, totalClips } = await req.json()
+    const {
+      taskId,
+      completedClips = [],
+      nextClipIndex,
+      prompts,
+      imageUrl,
+      beat,
+      model,
+      duration,
+      totalClips,
+      provider = 'seedance',
+    } = await req.json() as {
+      taskId: string
+      completedClips?: string[]
+      nextClipIndex?: number
+      prompts: string[]
+      imageUrl: string
+      beat?: { peak?: number }
+      model: string
+      duration: number
+      totalClips: number
+      provider?: VideoProvider
+    }
 
-    const poll = await fetch(`https://api.seedance2.ai/v1/tasks/${taskId}`, {
-      headers: { 'Authorization': `Bearer ${process.env.SEEDANCE_API_KEY}` },
-    })
-    const data = await poll.json()
-
-    const status = data.status || data.data?.status
-    const videoUrl = data.data?.results?.[0] || data.results?.[0]
-    const lastFrameUrl = data.data?.last_frame_url
+    const videoProvider: VideoProvider = provider === 'wavespeed' ? 'wavespeed' : 'seedance'
+    const pollResult = await pollVideoTask(videoProvider, taskId)
+    const { status, videoUrl } = pollResult
+    const lastFrameUrl = 'lastFrameUrl' in pollResult ? pollResult.lastFrameUrl : undefined
 
     if (status === 'completed' && videoUrl) {
       const newCompletedClips = [...completedClips, videoUrl]
@@ -21,44 +44,37 @@ export async function POST(req: NextRequest) {
         const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
         const nextImageUrl = lastFrameUrl || imageUrl
 
-        const res = await fetch('https://api.seedance2.ai/v1/videos/generations', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.SEEDANCE_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            input: {
-              prompt: nextPrompt,
-              generation_type: 'reference-to-video',
-              image_urls: [nextImageUrl],
-              duration,
-              resolution: '480p',
-              watermark: false,
-              generate_audio: true,
-              return_last_frame: nextIndex < totalClips - 1,
-            },
-          }),
+        const submitResult = await submitVideoClip(videoProvider, {
+          prompt: nextPrompt,
+          imageUrl: nextImageUrl,
+          model,
+          duration,
+          returnLastFrame: nextIndex < totalClips - 1,
         })
-        const nextData = await res.json()
-        const nextTaskId = nextData.taskId || nextData.id
-        if (!nextTaskId) throw new Error(`Clip ${nextIndex + 1} failed: ` + JSON.stringify(nextData))
+
+        if (!('taskId' in submitResult)) {
+          const label = videoProvider === 'wavespeed' ? 'WaveSpeed' : 'Seedance'
+          throw new Error(`Clip ${nextIndex + 1} failed (${label}): ${submitResult.error}`)
+        }
 
         return NextResponse.json({
           status: `clip${nextIndex}_done`,
           completedClips: newCompletedClips,
-          nextTaskId,
+          nextTaskId: submitResult.taskId,
           nextClipIndex: nextIndex + 1,
+          provider: videoProvider,
         })
       }
 
-      return NextResponse.json({ status: 'completed', completedClips: newCompletedClips })
+      return NextResponse.json({ status: 'completed', completedClips: newCompletedClips, provider: videoProvider })
     }
 
-    if (status === 'failed') throw new Error('Seedance failed: ' + JSON.stringify(data))
-    return NextResponse.json({ status: status || 'processing' })
+    if (status === 'failed') {
+      const label = videoProvider === 'wavespeed' ? 'WaveSpeed' : 'Seedance'
+      throw new Error(`${label} failed: status=${status}`)
+    }
 
+    return NextResponse.json({ status: status || 'processing', provider: videoProvider })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

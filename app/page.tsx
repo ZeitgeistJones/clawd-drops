@@ -239,6 +239,7 @@ export default function Home() {
       let completedClips: string[] = []
       let currentTaskId = videoJobData.taskId1
       let nextClipIndex = 1
+      let videoProvider = videoJobData.provider ?? 'seedance'
 
       for (let i = 0; i < 80; i++) {
         await new Promise(r => setTimeout(r, 10000))
@@ -255,6 +256,7 @@ export default function Home() {
             model: selectedModel,
             duration,
             totalClips: clipCount,
+            provider: videoProvider,
           }),
         })
         const pollData = await pollRes.json()
@@ -263,6 +265,7 @@ export default function Home() {
           completedClips = pollData.completedClips
           currentTaskId = pollData.nextTaskId
           nextClipIndex = pollData.nextClipIndex
+          videoProvider = pollData.provider ?? videoProvider
           addLog(`Clip ${completedClips.length} ready. Generating clip ${completedClips.length + 1}...`)
           continue
         }
