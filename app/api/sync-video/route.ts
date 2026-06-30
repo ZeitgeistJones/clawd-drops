@@ -34,6 +34,38 @@ Drop at second ${dropSec}. Peak at second ${peakSec}.
 Download this audio URL directly. Do not search for or download music from YouTube, SoundCloud, or any other source.`
 }
 
+function totalClipSeconds(durations: number[]): number {
+  return durations.reduce((sum, d) => sum + d, 0)
+}
+
+function buildManusFinalInstructions(opts: {
+  totalSeconds: number
+  dropSec: number
+  clipCount: number
+  mode: 'video' | 'flipbook'
+  musicMode?: string
+}): string {
+  const { totalSeconds, dropSec, clipCount, mode, musicMode } = opts
+  const lines = [
+    '',
+    '--- OUTPUT REQUIREMENTS (follow exactly) ---',
+    `Final exported MP4 must be exactly ${totalSeconds} seconds long — no longer, no shorter.`,
+    `Trim the audio to ${totalSeconds}s. Do not use the full song if it is longer than ${totalSeconds}s.`,
+    mode === 'flipbook'
+      ? `Land the music drop around second ${dropSec} within the ${totalSeconds}s timeline.`
+      : clipCount >= 2
+        ? `Cut from the build clip(s) to the drop clip at the music drop around second ${dropSec} (within the ${totalSeconds}s export).`
+        : `Sync the single clip to the drop around second ${dropSec} (within the ${totalSeconds}s export).`,
+    'Loop or speed-ramp source clips only as needed to fill the timeline — do not pad with black frames.',
+    musicMode === 'find-song'
+      ? 'Use only the provided CC0 audio URL; trim it to fit the export length.'
+      : 'Trim provided audio to fit the export length.',
+    'Apply consistent color grading across all clips.',
+    'Export as MP4 and return only the final video URL.',
+  ]
+  return lines.join('\n')
+}
+
 export async function POST(req: NextRequest) {
   let rawVideoUrl = null
   try {
@@ -60,13 +92,21 @@ export async function POST(req: NextRequest) {
 
     const audioSection = audioBlock(audioUrl, beat ?? {})
     const dropSec = beat?.drop ?? beat?.dropSeconds ?? 2
+    const totalSeconds = totalClipSeconds(durations)
+    const finalInstructions = buildManusFinalInstructions({
+      totalSeconds,
+      dropSec,
+      clipCount: clips.length,
+      mode: mode === 'flipbook' ? 'flipbook' : 'video',
+      musicMode,
+    })
 
     let content = ''
 
     if (mode === 'flipbook') {
       if (!frames.length) throw new Error('No flipbook frames provided')
       const frameList = buildFrameList(frames)
-      content = `/video-sync Here are ${frames.length} sequential character images showing an emotional arc:\n${frameList}\n\n${audioSection}\n\nStitch these into a fast flipbook-style video — quick cuts between frames, building tension, with the final frame landing on the music drop around second ${dropSec}. Apply subtle VFX at the drop — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
+      content = `/video-sync Here are ${frames.length} sequential character images showing an emotional arc:\n${frameList}\n\n${audioSection}\n\nStitch these into a fast flipbook-style video — quick cuts between frames, building tension, with the final frame landing on the music drop around second ${dropSec}. Apply subtle VFX at the drop — brightness flash and saturation boost.${finalInstructions}`
     } else {
       if (!clips.length) throw new Error('No clips provided')
       const clipList = buildClipList(clips, durations)
@@ -74,9 +114,9 @@ export async function POST(req: NextRequest) {
         'Clip durations are provided above — loop or trim clips to fit the audio without re-probing duration.'
 
       if (musicMode === 'find-song') {
-        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\nThis is a CC0 track pre-selected by the app. Use only the provided audio URL.\n${durationNote} Cut between clips at the drop around second ${dropSec}. Apply VFX at cut points — brightness flash, saturation boost, RGB split glitch, screen shake. Apply slow-mo to the build clip and speed ramp into the drop. Apply consistent color grading. Export as MP4 and return only the final URL.`
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\nThis is a CC0 track pre-selected by the app. Use only the provided audio URL.\n${durationNote} Cut between clips at the drop around second ${dropSec}. Apply VFX at cut points — brightness flash, saturation boost, RGB split glitch, screen shake. Apply slow-mo to the build clip and speed ramp into the drop.${finalInstructions}`
       } else {
-        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost. Apply consistent color grading. Export as MP4 and return only the final URL.`
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost.${finalInstructions}`
       }
     }
 
