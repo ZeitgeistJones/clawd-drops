@@ -9,6 +9,27 @@ const FREESOUND_POST_FILTER_EXCLUDE = [
   'forest', 'ocean', 'thunder', 'cricket', 'insect',
 ] as const
 
+const DROP_INTENT_TERMS = [
+  'drop', 'build', 'epic', 'edm', 'bass', 'festival', 'club', 'dance',
+  'trap', 'house', 'banger', 'remix', 'beat', 'bassdrop', 'buildup',
+] as const
+
+const SOFT_MUSIC_TERMS = [
+  'piano', 'soft', 'calm', 'peaceful', 'evolving', 'soundtrack', 'orchestral',
+  'lounge', 'chill', 'gentle', 'lullaby', 'meditation', 'documentary',
+  'background', 'sci-fi', 'scifi', 'alien', 'strings', 'flute', 'harp',
+  'classical', 'slow', 'mellow', 'relax', 'spa', 'yoga', 'sleep', 'study',
+  'corporate', 'underscore', 'cinematic bed', 'atmosphere', 'atmospheric',
+  'pad', 'drone', 'texture', 'evolve', 'evolving',
+] as const
+
+const DROP_PREFER_TERMS = [
+  'drop', 'edm', 'electronic', 'dance', 'bass', 'beat', 'loop', 'house',
+  'trap', 'festival', 'build', 'club', 'synth', 'electro', 'techno',
+  'banger', 'kick', 'snare', 'drums', '808', 'brostep', 'dubstep',
+  'bigroom', 'big-room', 'progressive', 'anthem',
+] as const
+
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'with', 'for', 'of', 'in', 'on', 'at', 'to', 'is', 'are',
   'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -25,20 +46,58 @@ export type LibraryMusicResult = {
   query?: string
 }
 
-function applyFreesoundMusicConstraints(query: string): string {
+type FreesoundTrack = {
+  name?: string
+  username?: string
+  tags?: string[]
+  previews?: Record<string, string>
+}
+
+function applyFreesoundMusicConstraints(query: string, dropIntent: boolean): string {
   const exclusions = FREESOUND_EXCLUDE_TERMS.map(t => `-${t}`).join(' ')
-  return `${query.trim()} tag:${FREESOUND_MUSIC_TAG} ${exclusions}`.trim()
+  const softExclusions = dropIntent
+    ? SOFT_MUSIC_TERMS.slice(0, 12).map(t => `-${t.replace(/\s+/g, '-')}`).join(' ')
+    : ''
+  return `${query.trim()} tag:${FREESOUND_MUSIC_TAG} ${exclusions} ${softExclusions}`.trim()
 }
 
-function textContainsExcludedTerm(text: string): boolean {
+function textContainsTerm(text: string, terms: readonly string[]): boolean {
   const normalized = text.toLowerCase()
-  return FREESOUND_POST_FILTER_EXCLUDE.some(term => normalized.includes(term))
+  return terms.some(term => normalized.includes(term))
 }
 
-function isExcludedFreesoundTrack(track: { name?: string; tags?: string[] }): boolean {
-  if (track.name && textContainsExcludedTerm(track.name)) return true
-  const tags = track.tags || []
-  return tags.some(tag => textContainsExcludedTerm(tag))
+function isExcludedFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): boolean {
+  const haystacks = [track.name || '', ...(track.tags || [])]
+  for (const text of haystacks) {
+    if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
+    if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
+  }
+  return false
+}
+
+function scoreFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): number {
+  if (isExcludedFreesoundTrack(track, dropIntent)) return -1
+
+  const haystacks = [track.name || '', ...(track.tags || [])].join(' ').toLowerCase()
+  if (!dropIntent) return 1
+
+  let score = 0
+  for (const term of DROP_PREFER_TERMS) {
+    if (haystacks.includes(term)) score += 2
+  }
+  if (haystacks.includes('drop')) score += 4
+  if (haystacks.includes('edm') || haystacks.includes('electronic')) score += 3
+  if (haystacks.includes('bass')) score += 2
+  if (haystacks.includes('loop') || haystacks.includes('beat')) score += 1
+
+  return score
+}
+
+function hasDropIntent(mood: string, tokens: string[]): boolean {
+  const normalized = mood.toLowerCase()
+  return tokens.some(t => DROP_INTENT_TERMS.includes(t as typeof DROP_INTENT_TERMS[number]))
+    || normalized.includes('build drop')
+    || normalized.includes('bass drop')
 }
 
 function extractMoodTokens(mood: string): string[] {
@@ -58,7 +117,7 @@ function extractMoodTokens(mood: string): string[] {
   }
 
   if (tokens.length === 0) {
-    return ['cinematic', 'instrumental', 'music']
+    return ['edm', 'drop', 'electronic']
   }
 
   if (!tokens.includes('music')) {
@@ -68,26 +127,74 @@ function extractMoodTokens(mood: string): string[] {
   return tokens
 }
 
-function buildFreesoundQueries(tokens: string[]): [string, string] {
+function buildFreesoundQueries(tokens: string[], dropIntent: boolean): string[] {
+  if (dropIntent) {
+    const moodPart = tokens
+      .filter(t => !['music', 'cinematic', 'instrumental', 'dark', 'epic'].includes(t))
+      .slice(0, 2)
+      .join(' ')
+
+    return [
+      `${moodPart} edm bass drop build`.trim(),
+      'electronic dance drop build bass loop',
+      'edm festival drop beat instrumental',
+    ]
+  }
+
   const strict = tokens.slice(0, 3).join(' ')
   let broad = tokens.length >= 2 ? tokens.slice(0, 2).join(' ') : tokens[0]
   if (broad === strict) broad = tokens.length >= 2 ? tokens[0] : 'instrumental music'
   return [strict, broad]
 }
 
-async function searchFreesound(query: string) {
+function buildJamendoTags(tokens: string[], dropIntent: boolean): string[] {
+  if (dropIntent) {
+    return ['electronic', 'edm', 'dance', 'drop']
+  }
+  return tokens.filter(t => t !== 'music').slice(0, 3)
+}
+
+function pickBestFreesoundTrack(results: FreesoundTrack[], dropIntent: boolean) {
+  let best: { track: FreesoundTrack; score: number } | null = null
+
+  for (const track of results) {
+    const score = scoreFreesoundTrack(track, dropIntent)
+    if (score < 0) continue
+
+    const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
+    if (!audioUrl) continue
+
+    if (dropIntent && score === 0) continue
+
+    if (!best || score > best.score) {
+      best = { track, score }
+    }
+  }
+
+  if (!best) return null
+
+  const audioUrl = best.track.previews?.['preview-hq-mp3'] || best.track.previews?.['preview-lq-mp3']
+  if (!audioUrl) return null
+
+  return { audioUrl, title: best.track.name, creator: best.track.username }
+}
+
+async function fetchFreesoundResults(query: string, dropIntent: boolean, useBpmFilter: boolean) {
   const fields = ['id', 'name', 'username', 'license', 'duration', 'previews', 'tags'].join(',')
-  const filter = [
+  const filterParts = [
     'license:("Creative Commons 0")',
     'duration:[15 TO 240]',
     `tag:${FREESOUND_MUSIC_TAG}`,
-  ].join(' ')
+  ]
+  if (dropIntent && useBpmFilter) {
+    filterParts.push('bpm:[110 TO 150]')
+  }
 
   const url = new URL('https://freesound.org/apiv2/search/text/')
-  url.searchParams.set('query', applyFreesoundMusicConstraints(query))
-  url.searchParams.set('filter', filter)
+  url.searchParams.set('query', applyFreesoundMusicConstraints(query, dropIntent))
+  url.searchParams.set('filter', filterParts.join(' '))
   url.searchParams.set('fields', fields)
-  url.searchParams.set('page_size', '10')
+  url.searchParams.set('page_size', '20')
   url.searchParams.set('sort', 'rating_desc')
 
   const res = await fetch(url.toString(), {
@@ -96,31 +203,50 @@ async function searchFreesound(query: string) {
   if (!res.ok) throw new Error('Freesound search failed: ' + res.status)
 
   const data = await res.json()
-  const results = data.results || []
-  if (results.length === 0) return null
+  return data.results || []
+}
 
-  for (const track of results) {
-    if (isExcludedFreesoundTrack(track)) continue
+async function searchFreesound(query: string, dropIntent: boolean) {
+  for (const useBpmFilter of dropIntent ? [true, false] : [false]) {
+    const results = await fetchFreesoundResults(query, dropIntent, useBpmFilter)
+    if (results.length === 0) continue
 
-    const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
-    if (!audioUrl) continue
-
-    return { audioUrl, title: track.name, creator: track.username }
+    const picked = pickBestFreesoundTrack(results, dropIntent)
+    if (picked) return picked
   }
 
   return null
 }
 
-async function searchJamendo(tokens: string[]) {
+function isExcludedJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean): boolean {
+  const text = `${track.name || ''} ${typeof track.tags === 'string' ? track.tags : ''}`.toLowerCase()
+  if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
+  if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
+  return false
+}
+
+function scoreJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean): number {
+  if (isExcludedJamendoTrack(track, dropIntent)) return -1
+  if (!dropIntent) return 1
+
+  const text = `${track.name || ''} ${typeof track.tags === 'string' ? track.tags : ''}`.toLowerCase()
+  let score = 0
+  for (const term of DROP_PREFER_TERMS) {
+    if (text.includes(term)) score += 2
+  }
+  return score
+}
+
+async function searchJamendo(tokens: string[], dropIntent: boolean) {
   const clientId = process.env.JAMENDO_CLIENT_ID
   if (!clientId) return null
 
-  const tags = tokens.slice(0, 3).join('+')
+  const jamendoTags = buildJamendoTags(tokens, dropIntent)
   const url = new URL('https://api.jamendo.com/v3.0/tracks/')
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('format', 'json')
-  url.searchParams.set('limit', '10')
-  url.searchParams.set('tags', tags)
+  url.searchParams.set('limit', '15')
+  url.searchParams.set('tags', jamendoTags.join('+'))
   url.searchParams.set('vocalinstrumental', 'instrumental')
   url.searchParams.set('order', 'relevance_desc')
 
@@ -131,38 +257,77 @@ async function searchJamendo(tokens: string[]) {
   const results = data.results || []
   if (results.length === 0) return null
 
-  const track = results[0]
-  const audioUrl = track.audio || track.audiodownload
-  if (!audioUrl) return null
+  let best: { track: typeof results[0]; score: number } | null = null
+  for (const track of results) {
+    const score = scoreJamendoTrack(track, dropIntent)
+    if (score < 0) continue
+    if (dropIntent && score === 0) continue
 
-  return { audioUrl, title: track.name, creator: track.artist_name }
+    const audioUrl = track.audio || track.audiodownload
+    if (!audioUrl) continue
+
+    if (!best || score > best.score) {
+      best = { track, score }
+    }
+  }
+
+  if (!best) return null
+
+  return {
+    audioUrl: best.track.audio || best.track.audiodownload,
+    title: best.track.name,
+    creator: best.track.artist_name,
+  }
 }
 
 export async function searchLibraryMusic(mood: string): Promise<LibraryMusicResult> {
-  const tokens = extractMoodTokens(mood || 'cinematic instrumental')
-  const [strictQuery, broadQuery] = buildFreesoundQueries(tokens)
+  const tokens = extractMoodTokens(mood || 'edm drop electronic')
+  const dropIntent = hasDropIntent(mood, tokens)
+  const queries = buildFreesoundQueries(tokens, dropIntent)
+
+  if (dropIntent) {
+    const jamendoResult = await searchJamendo(tokens, true)
+    if (jamendoResult) {
+      return { ...jamendoResult, source: 'jamendo' }
+    }
+
+    for (const query of queries) {
+      try {
+        const result = await searchFreesound(query, true)
+        if (result) {
+          return { ...result, source: 'freesound', query }
+        }
+      } catch {
+        // try next query
+      }
+    }
+
+    return { audioUrl: SOUNDHELIX_URL, source: 'fallback' }
+  }
 
   try {
-    const strictResult = await searchFreesound(strictQuery)
+    const strictResult = await searchFreesound(queries[0], false)
     if (strictResult) {
-      return { ...strictResult, source: 'freesound', query: strictQuery }
+      return { ...strictResult, source: 'freesound', query: queries[0] }
     }
   } catch {
     // try jamendo / broad freesound
   }
 
-  const jamendoResult = await searchJamendo(tokens)
+  const jamendoResult = await searchJamendo(tokens, false)
   if (jamendoResult) {
     return { ...jamendoResult, source: 'jamendo' }
   }
 
-  try {
-    const broadResult = await searchFreesound(broadQuery)
-    if (broadResult) {
-      return { ...broadResult, source: 'freesound', query: broadQuery }
+  if (queries[1]) {
+    try {
+      const broadResult = await searchFreesound(queries[1], false)
+      if (broadResult) {
+        return { ...broadResult, source: 'freesound', query: queries[1] }
+      }
+    } catch {
+      // fall through to SoundHelix
     }
-  } catch {
-    // fall through to SoundHelix
   }
 
   return { audioUrl: SOUNDHELIX_URL, source: 'fallback' }

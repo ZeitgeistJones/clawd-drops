@@ -39,7 +39,7 @@ const MODELS = [
   { id: 'flipbook', label: 'FLIPBOOK' },
 ]
 
-const DURATIONS = [4, 5, 8, 10]
+const DURATIONS = [4, 5, 6, 8, 10]
 const POSE_COUNTS = [2, 3, 4, 5, 6]
 const CLAWD_DEFAULT = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
 
