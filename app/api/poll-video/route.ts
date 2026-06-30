@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   pollVideoTask,
   submitVideoClip,
+  isVideoProvider,
+  PROVIDER_LABELS,
   type VideoProvider,
 } from '../../../lib/video-providers'
 
@@ -31,7 +33,7 @@ export async function POST(req: NextRequest) {
       provider?: VideoProvider
     }
 
-    const videoProvider: VideoProvider = provider === 'wavespeed' ? 'wavespeed' : 'seedance'
+    const videoProvider: VideoProvider = isVideoProvider(provider) ? provider : 'seedance'
     const pollResult = await pollVideoTask(videoProvider, taskId)
     const { status, videoUrl } = pollResult
     const lastFrameUrl =
@@ -56,8 +58,9 @@ export async function POST(req: NextRequest) {
         })
 
         if (!('taskId' in submitResult)) {
-          const label = videoProvider === 'wavespeed' ? 'WaveSpeed' : 'Seedance'
-          throw new Error(`Clip ${nextIndex + 1} failed (${label}): ${submitResult.error}`)
+          throw new Error(
+            `Clip ${nextIndex + 1} failed (${PROVIDER_LABELS[videoProvider]}): ${submitResult.error}`
+          )
         }
 
         return NextResponse.json({
@@ -73,8 +76,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (status === 'failed') {
-      const label = videoProvider === 'wavespeed' ? 'WaveSpeed' : 'Seedance'
-      throw new Error(`${label} failed: status=${status}`)
+      throw new Error(`${PROVIDER_LABELS[videoProvider]} failed: status=${status}`)
     }
 
     return NextResponse.json({ status: status || 'processing', provider: videoProvider })

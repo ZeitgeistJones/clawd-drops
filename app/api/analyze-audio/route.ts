@@ -1,37 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import decodeAudio from 'audio-decode'
+import {
+  analyzeBeatFromAudioBuffer,
+  fallbackBeatAnalysis,
+} from '../../../lib/beat-analysis'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+export const runtime = 'nodejs'
+export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
+  let duration = 8
   try {
-    const { audioUrl } = await req.json()
+    const body = await req.json()
+    const { audioUrl } = body
+    duration = typeof body.duration === 'number' ? body.duration : 8
 
-    // Use Claude to estimate beat structure from the suno prompt context
-    // For real beat analysis, swap this with ACRCloud or Audd.io
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
-      messages: [{
-        role: 'user',
-        content: `Given an 8-second music track URL: ${audioUrl}
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return NextResponse.json(fallbackBeatAnalysis(duration))
+    }
 
-Estimate realistic beat data for this track. Return ONLY a JSON object with:
-- "bpm": integer between 90-160
-- "drop": float — timestamp in seconds where energy peaks or drops (between 3.0 and 6.0)
-- "peak": float — timestamp of single most impactful moment (between 4.0 and 7.0, must be after drop)
-- "energy": string, one of: "low", "medium", "high", "extreme"
+    const audioRes = await fetch(audioUrl)
+    if (!audioRes.ok) {
+      return NextResponse.json(fallbackBeatAnalysis(duration))
+    }
 
-Return only the JSON object.`
-      }]
-    })
+    const buffer = await audioRes.arrayBuffer()
+    if (buffer.byteLength > 10 * 1024 * 1024) {
+      return NextResponse.json(fallbackBeatAnalysis(duration))
+    }
 
-    const text = message.content[0].type === 'text' ? message.content[0].text : ''
-    const clean = text.replace(/```json|```/g, '').trim()
-    const beat = JSON.parse(clean)
-    return NextResponse.json(beat)
-  } catch (err: any) {
-    // Fallback beat data if analysis fails
-    return NextResponse.json({ bpm: 128, drop: 4.2, peak: 5.8, energy: 'high' })
+    const decoded = await decodeAudio(buffer)
+    const channelData = Array.from({ length: decoded.numberOfChannels }, (_, i) =>
+      decoded.getChannelData(i)
+    )
+
+    const result = await analyzeBeatFromAudioBuffer(channelData, decoded.sampleRate)
+    return NextResponse.json(result)
+  } catch {
+    return NextResponse.json(fallbackBeatAnalysis(duration))
   }
 }

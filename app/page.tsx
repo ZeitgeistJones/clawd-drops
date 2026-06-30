@@ -181,23 +181,45 @@ export default function Home() {
  let musicData = { audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' }
       if (musicMode === 'ai') {
         setStage(STAGES.GENERATING_MUSIC)
-        addLog('Searching for matching instrumental...')
-        const musicRes = await fetch('/api/generate-music', {
+        addLog('Generating original instrumental with MusicAPI...')
+        const musicRes = await fetch('/api/generate-song', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mood: promptData.style || goal }),
+          body: JSON.stringify({
+            prompt: promptData.style || goal,
+            durationSeconds: 18,
+          }),
         })
         const musicResult = await musicRes.json()
+        if (!musicResult.success || !musicResult.audioUrl) {
+          throw new Error(musicResult.error || 'Music generation failed')
+        }
         musicData = { audioUrl: musicResult.audioUrl }
-        addLog(musicResult.source === 'freesound' ? `Found: ${musicResult.title}` : 'Using fallback track.')
+        addLog(
+          musicResult.provider === 'musicapi'
+            ? `Generated: ${musicResult.title || 'AI track'}`
+            : 'Using library fallback track.'
+        )
       }
 
       // STEP 4: Beat data
       setStage(STAGES.ANALYZING_AUDIO)
       addLog('Analyzing beat structure...')
-      const audioData = { bpm: 128, drop: 2.0, peak: duration * 0.7, energy: 'high' }
+      let audioData = { bpm: 128, drop: duration * 0.55, peak: duration * 0.7, dropSeconds: duration * 0.55, peakSeconds: duration * 0.7, energy: 'high', source: 'fallback' }
+      if (musicMode === 'ai' && musicData.audioUrl) {
+        const analyzeRes = await fetch('/api/analyze-audio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audioUrl: musicData.audioUrl, duration }),
+        })
+        audioData = await analyzeRes.json()
+      }
       setBeatData(audioData)
-      addLog(`BPM: ${audioData.bpm} | Drop: ${audioData.drop}s | Peak: ${audioData.peak}s`)
+      addLog(
+        audioData.source === 'fallback'
+          ? 'Beat analysis fallback — using estimates.'
+          : `BPM: ${audioData.bpm} | Drop: ${audioData.dropSeconds ?? audioData.drop}s | Peak: ${audioData.peakSeconds ?? audioData.peak}s`
+      )
 
       // STEP 5: Style character
       setStage(STAGES.STYLING)
