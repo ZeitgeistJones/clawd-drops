@@ -1,5 +1,14 @@
 const SOUNDHELIX_URL = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
 
+const FREESOUND_MUSIC_TAG = 'music'
+const FREESOUND_EXCLUDE_TERMS = [
+  'birds', 'nature', 'ambient', 'field-recording', 'rain', 'wind',
+] as const
+const FREESOUND_POST_FILTER_EXCLUDE = [
+  ...FREESOUND_EXCLUDE_TERMS,
+  'forest', 'ocean', 'thunder', 'cricket', 'insect',
+] as const
+
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'with', 'for', 'of', 'in', 'on', 'at', 'to', 'is', 'are',
   'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -14,6 +23,22 @@ export type LibraryMusicResult = {
   title?: string
   creator?: string
   query?: string
+}
+
+function applyFreesoundMusicConstraints(query: string): string {
+  const exclusions = FREESOUND_EXCLUDE_TERMS.map(t => `-${t}`).join(' ')
+  return `${query.trim()} tag:${FREESOUND_MUSIC_TAG} ${exclusions}`.trim()
+}
+
+function textContainsExcludedTerm(text: string): boolean {
+  const normalized = text.toLowerCase()
+  return FREESOUND_POST_FILTER_EXCLUDE.some(term => normalized.includes(term))
+}
+
+function isExcludedFreesoundTrack(track: { name?: string; tags?: string[] }): boolean {
+  if (track.name && textContainsExcludedTerm(track.name)) return true
+  const tags = track.tags || []
+  return tags.some(tag => textContainsExcludedTerm(tag))
 }
 
 function extractMoodTokens(mood: string): string[] {
@@ -32,22 +57,34 @@ function extractMoodTokens(mood: string): string[] {
     }
   }
 
-  return tokens.length > 0 ? tokens : ['cinematic', 'instrumental']
+  if (tokens.length === 0) {
+    return ['cinematic', 'instrumental', 'music']
+  }
+
+  if (!tokens.includes('music')) {
+    tokens.push('music')
+  }
+
+  return tokens
 }
 
 function buildFreesoundQueries(tokens: string[]): [string, string] {
   const strict = tokens.slice(0, 3).join(' ')
   let broad = tokens.length >= 2 ? tokens.slice(0, 2).join(' ') : tokens[0]
-  if (broad === strict) broad = tokens.length >= 2 ? tokens[0] : 'ambient'
+  if (broad === strict) broad = tokens.length >= 2 ? tokens[0] : 'instrumental music'
   return [strict, broad]
 }
 
 async function searchFreesound(query: string) {
-  const fields = ['id', 'name', 'username', 'license', 'duration', 'previews'].join(',')
-  const filter = ['license:("Creative Commons 0")', 'duration:[15 TO 240]'].join(' ')
+  const fields = ['id', 'name', 'username', 'license', 'duration', 'previews', 'tags'].join(',')
+  const filter = [
+    'license:("Creative Commons 0")',
+    'duration:[15 TO 240]',
+    `tag:${FREESOUND_MUSIC_TAG}`,
+  ].join(' ')
 
   const url = new URL('https://freesound.org/apiv2/search/text/')
-  url.searchParams.set('query', query)
+  url.searchParams.set('query', applyFreesoundMusicConstraints(query))
   url.searchParams.set('filter', filter)
   url.searchParams.set('fields', fields)
   url.searchParams.set('page_size', '10')
@@ -62,11 +99,16 @@ async function searchFreesound(query: string) {
   const results = data.results || []
   if (results.length === 0) return null
 
-  const track = results[0]
-  const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
-  if (!audioUrl) return null
+  for (const track of results) {
+    if (isExcludedFreesoundTrack(track)) continue
 
-  return { audioUrl, title: track.name, creator: track.username }
+    const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
+    if (!audioUrl) continue
+
+    return { audioUrl, title: track.name, creator: track.username }
+  }
+
+  return null
 }
 
 async function searchJamendo(tokens: string[]) {
@@ -100,20 +142,27 @@ export async function searchLibraryMusic(mood: string): Promise<LibraryMusicResu
   const tokens = extractMoodTokens(mood || 'cinematic instrumental')
   const [strictQuery, broadQuery] = buildFreesoundQueries(tokens)
 
-  for (const query of [strictQuery, broadQuery]) {
-    try {
-      const result = await searchFreesound(query)
-      if (result) {
-        return { ...result, source: 'freesound', query }
-      }
-    } catch {
-      // try next query / jamendo
+  try {
+    const strictResult = await searchFreesound(strictQuery)
+    if (strictResult) {
+      return { ...strictResult, source: 'freesound', query: strictQuery }
     }
+  } catch {
+    // try jamendo / broad freesound
   }
 
   const jamendoResult = await searchJamendo(tokens)
   if (jamendoResult) {
     return { ...jamendoResult, source: 'jamendo' }
+  }
+
+  try {
+    const broadResult = await searchFreesound(broadQuery)
+    if (broadResult) {
+      return { ...broadResult, source: 'freesound', query: broadQuery }
+    }
+  } catch {
+    // fall through to SoundHelix
   }
 
   return { audioUrl: SOUNDHELIX_URL, source: 'fallback' }
