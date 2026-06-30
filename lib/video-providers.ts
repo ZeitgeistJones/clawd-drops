@@ -96,7 +96,8 @@ export async function pollSeedanceTask(taskId: string): Promise<{
   const data = await res.json()
   const status = data.status || data.data?.status || 'processing'
   const videoUrl = data.data?.results?.[0] || data.results?.[0]
-  const lastFrameUrl = data.data?.last_frame_url
+  const lastFrameUrl =
+    typeof data.data?.last_frame_url === 'string' ? data.data.last_frame_url : undefined
   return { status, videoUrl, lastFrameUrl }
 }
 
@@ -114,7 +115,11 @@ export async function pollWaveSpeedTask(taskId: string): Promise<{
   return { status, videoUrl }
 }
 
-export async function pollVideoTask(provider: VideoProvider, taskId: string) {
+export async function pollVideoTask(provider: VideoProvider, taskId: string): Promise<{
+  status: string
+  videoUrl?: string
+  lastFrameUrl?: string
+}> {
   if (provider === 'wavespeed') return pollWaveSpeedTask(taskId)
   return pollSeedanceTask(taskId)
 }

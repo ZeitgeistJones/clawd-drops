@@ -34,7 +34,10 @@ export async function POST(req: NextRequest) {
     const videoProvider: VideoProvider = provider === 'wavespeed' ? 'wavespeed' : 'seedance'
     const pollResult = await pollVideoTask(videoProvider, taskId)
     const { status, videoUrl } = pollResult
-    const lastFrameUrl = 'lastFrameUrl' in pollResult ? pollResult.lastFrameUrl : undefined
+    const lastFrameUrl =
+      'lastFrameUrl' in pollResult && typeof pollResult.lastFrameUrl === 'string'
+        ? pollResult.lastFrameUrl
+        : undefined
 
     if (status === 'completed' && videoUrl) {
       const newCompletedClips = [...completedClips, videoUrl]
@@ -42,7 +45,7 @@ export async function POST(req: NextRequest) {
 
       if (nextIndex < totalClips) {
         const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
-        const nextImageUrl = lastFrameUrl || imageUrl
+        const nextImageUrl: string = lastFrameUrl ?? imageUrl
 
         const submitResult = await submitVideoClip(videoProvider, {
           prompt: nextPrompt,
