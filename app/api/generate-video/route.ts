@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { wrapVideoClipPrompt } from '../../../lib/clip-prompts'
 import {
   submitVideoClipWithFallback,
   isVideoProvider,
@@ -33,8 +34,8 @@ export async function POST(req: NextRequest) {
       : prompts.map(() => duration)
     const clipDuration = durations[0] ?? duration
 
-    const firstPrompt = `${prompts[0]} @Image1 is the character reference. Slow atmospheric build, tension rising.`
     const totalClips = prompts.length
+    const firstPrompt = wrapVideoClipPrompt(prompts[0], 0, totalClips, clipDuration)
     const forced = forceProvider && isVideoProvider(forceProvider) ? forceProvider : undefined
 
     const submitResult = await submitVideoClipWithFallback(

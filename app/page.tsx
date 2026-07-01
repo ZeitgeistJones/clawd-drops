@@ -242,6 +242,7 @@ export default function Home() {
           goal,
           musicMode,
           clipCount,
+          clipDurations,
           outputMode: isFlipbook ? 'flipbook' : 'video',
           poseCount,
         }),
@@ -249,7 +250,18 @@ export default function Home() {
       const promptData = await promptRes.json()
       if (promptData.error) throw new Error(promptData.error)
       setPrompts(promptData)
-      addLog('Prompts locked.')
+      const promptSource = promptData.clipPromptSource === 'structured'
+        ? 'structured goal'
+        : 'AI split'
+      addLog(`Prompts locked (${promptSource}).`)
+      if (!isFlipbook) {
+        for (let i = 0; i < clipCount; i++) {
+          const text = promptData[`seedance${i + 1}`]
+          if (!text) continue
+          const label = i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`
+          addLog(`  ${label}: ${String(text).slice(0, 120)}${String(text).length > 120 ? '…' : ''}`)
+        }
+      }
 
       setStage(STAGES.UPLOADING_IMAGE)
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
@@ -614,11 +626,13 @@ export default function Home() {
             onChange={e => setGoal(e.target.value)}
             disabled={isRunning}
             placeholder={
-              musicMode === 'find-song'
-                ? 'describe the scene and character energy...'
-                : 'clawd grinding on a build, late night, hypnotic vibe'
+              !isFlipbook && clipCount >= 2
+                ? 'BUILD (clip 1): slow walk, smoke, tension...\nDROP (clip 2): shockwave, arms up, epic hit...\nSTYLE: dark cyberpunk'
+                : musicMode === 'find-song'
+                  ? 'describe the scene and character energy...'
+                  : 'clawd grinding on a build, late night, hypnotic vibe'
             }
-            rows={3}
+            rows={!isFlipbook && clipCount >= 2 ? 5 : 3}
             style={{
               width: '100%', background: 'transparent', border: 'none', outline: 'none',
               color: '#fff', fontSize: 15, lineHeight: 1.6, padding: '18px 18px 14px',

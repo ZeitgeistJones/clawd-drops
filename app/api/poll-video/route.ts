@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { wrapVideoClipPrompt } from '../../../lib/clip-prompts'
 import {
   pollVideoTask,
   submitVideoClipWithFallback,
@@ -51,9 +52,15 @@ export async function POST(req: NextRequest) {
       const nextIndex = nextClipIndex ?? newCompletedClips.length
 
       if (nextIndex < totalClips) {
-        const nextPrompt = `${prompts[nextIndex]} @Image1 is the character reference. Peak explosive action at second ${beat?.peak || 3.5}.`
-        const nextImageUrl: string = lastFrameUrl ?? imageUrl
         const nextDuration = durations[nextIndex] ?? duration
+        const nextPrompt = wrapVideoClipPrompt(
+          prompts[nextIndex],
+          nextIndex,
+          totalClips,
+          nextDuration,
+          { continuesFromPriorFrame: Boolean(lastFrameUrl) }
+        )
+        const nextImageUrl: string = lastFrameUrl ?? imageUrl
 
         const submitResult = await submitVideoClipWithFallback({
           prompt: nextPrompt,
