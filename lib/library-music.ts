@@ -1,4 +1,5 @@
-import { CURATED_FALLBACK_TRACKS, resolveCuratedFallback } from './fallback-tracks'
+import { CURATED_FALLBACK_TRACKS, resolveCuratedTrack } from './fallback-tracks'
+import { wrapPreviewAudioUrl } from './preview-audio'
 
 const FREESOUND_MUSIC_TAG = 'music'
 const FREESOUND_EXCLUDE_TERMS = [
@@ -566,15 +567,23 @@ export async function searchLibraryMusic(
 
 type ScoredCandidate = LibraryMusicResult & { score: number }
 
+function candidateKey(item: ScoredCandidate): string {
+  if (item.title || item.creator) {
+    return `${item.source}:${item.title || ''}:${item.creator || ''}`
+  }
+  return item.audioUrl
+}
+
 function mergeCandidates(existing: ScoredCandidate[], incoming: ScoredCandidate[]) {
-  const byUrl = new Map(existing.map(item => [item.audioUrl, item]))
+  const byKey = new Map(existing.map(item => [candidateKey(item), item]))
   for (const item of incoming) {
-    const prev = byUrl.get(item.audioUrl)
+    const key = candidateKey(item)
+    const prev = byKey.get(key)
     if (!prev || item.score > prev.score) {
-      byUrl.set(item.audioUrl, item)
+      byKey.set(key, item)
     }
   }
-  return Array.from(byUrl.values()).sort((a, b) => b.score - a.score)
+  return Array.from(byKey.values()).sort((a, b) => b.score - a.score)
 }
 
 function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): LibraryMusicResult[] {
@@ -594,7 +603,10 @@ function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): Li
     }
   })
 
-  const filtered = enriched.filter(c => (c.dropSeconds ?? 99) <= MAX_BROWSE_DROP_SEC && c.score > -10)
+  const filtered = enriched.filter(c => {
+    if (c.source === 'fallback') return c.score > -10
+    return (c.dropSeconds ?? 99) <= MAX_BROWSE_DROP_SEC && c.score > -10
+  })
   filtered.sort((a, b) => b.score - a.score)
   const top = filtered.slice(0, limit)
   const topScore = top[0]?.score ?? 0
@@ -606,6 +618,14 @@ function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): Li
       recommended: i < 2 && c.score >= topScore - 4,
     }
   })
+}
+
+function withPreviewUrls(tracks: LibraryMusicResult[], siteOrigin?: string): LibraryMusicResult[] {
+  if (!siteOrigin) return tracks
+  return tracks.map(track => ({
+    ...track,
+    audioUrl: wrapPreviewAudioUrl(track.audioUrl, siteOrigin),
+  }))
 }
 
 export async function browseLibraryMusic(
@@ -620,7 +640,7 @@ export async function browseLibraryMusic(
   let merged: ScoredCandidate[] = []
 
   for (const track of CURATED_FALLBACK_TRACKS) {
-    const curated = await resolveCuratedFallback(track.tags.join(' '), true, siteOrigin)
+    const curated = await resolveCuratedTrack(track, siteOrigin)
     const moodScore = scoreTrackText(`${mood} ${track.tags.join(' ')}`, true)
     merged = mergeCandidates(merged, [{
       audioUrl: curated.audioUrl,
@@ -651,13 +671,13 @@ export async function browseLibraryMusic(
   if (merged.length === 0) {
     const single = await searchLibraryMusic(mood, siteOrigin)
     const dropSeconds = single.dropSeconds ?? estimateDropSeconds(single.title || '', mood)
-    return [{
+    return withPreviewUrls([{
       ...single,
       dropSeconds,
       previewStartSeconds: previewStartFromDrop(dropSeconds),
       recommended: true,
-    }]
+    }], siteOrigin)
   }
 
-  return finalizeBrowseResults(merged, limit)
+  return withPreviewUrls(finalizeBrowseResults(merged, limit), siteOrigin)
 }

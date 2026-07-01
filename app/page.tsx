@@ -194,19 +194,53 @@ export default function Home() {
 
   function playTrackPreview() {
     const audio = previewAudioRef.current
-    if (!audio || !selectedTrack) return
+    if (!audio || !selectedTrack?.audioUrl) return
+
     const start = selectedTrack.previewStartSeconds
       ?? Math.max(0, (selectedTrack.dropSeconds ?? 7) - 3)
-    const seek = () => {
-      audio.currentTime = start
-      audio.play().catch(() => {})
+
+    const seekAndPlay = async () => {
+      try {
+        const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
+          ? Math.max(0, audio.duration - 0.25)
+          : start
+        audio.currentTime = Math.min(start, maxSeek)
+        await audio.play()
+        setError(null)
+      } catch {
+        setError('Preview blocked — check volume, then tap PLAY DROP again')
+      }
     }
-    if (audio.readyState >= 1) {
-      seek()
-    } else {
-      audio.addEventListener('loadedmetadata', seek, { once: true })
-      audio.load()
-    }
+
+    const waitForAudio = () => new Promise<void>((resolve, reject) => {
+      if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        resolve()
+        return
+      }
+      const onReady = () => {
+        cleanup()
+        resolve()
+      }
+      const onError = () => {
+        cleanup()
+        reject(new Error('load failed'))
+      }
+      const cleanup = () => {
+        audio.removeEventListener('canplay', onReady)
+        audio.removeEventListener('error', onError)
+      }
+      audio.addEventListener('canplay', onReady, { once: true })
+      audio.addEventListener('error', onError, { once: true })
+    })
+
+    void (async () => {
+      try {
+        await waitForAudio()
+        await seekAndPlay()
+      } catch {
+        setError('Could not load this preview — try ◀ ▶ another track')
+      }
+    })()
   }
 
   function shiftTrack(delta: number) {
@@ -882,7 +916,13 @@ export default function Home() {
                     Preview bass-drop picks — PLAY DROP jumps straight to the hit (within ~3s).
                   </p>
                 )}
-                <audio ref={previewAudioRef} src={selectedTrack?.audioUrl || undefined} preload="metadata" style={{ display: 'none' }} />
+                <audio
+                  key={selectedTrack?.audioUrl || 'none'}
+                  ref={previewAudioRef}
+                  src={selectedTrack?.audioUrl || undefined}
+                  preload="auto"
+                  style={{ display: 'none' }}
+                />
               </div>
             </>
           )}

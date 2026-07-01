@@ -131,12 +131,10 @@ async function selfHostedUrlWorks(audioUrl: string): Promise<boolean> {
   }
 }
 
-export async function resolveCuratedFallback(
-  mood: string,
-  dropIntent: boolean,
+export async function resolveCuratedTrack(
+  track: CuratedFallbackTrack,
   siteOrigin?: string
 ): Promise<CuratedFallbackResult> {
-  const track = pickCuratedFallbackTrack(mood, dropIntent)
   const selfHosted = absoluteAudioUrl(track.file, siteOrigin)
 
   if (siteOrigin && (await selfHostedUrlWorks(selfHosted))) {
@@ -162,6 +160,25 @@ export async function resolveCuratedFallback(
     }
   }
 
+  return {
+    audioUrl: selfHosted,
+    title: track.title,
+    creator: track.creator,
+    dropSeconds: track.dropSeconds,
+    fallbackReason: 'curated_library',
+    trackId: track.id,
+  }
+}
+
+export async function resolveCuratedFallback(
+  mood: string,
+  dropIntent: boolean,
+  siteOrigin?: string
+): Promise<CuratedFallbackResult> {
+  const track = pickCuratedFallbackTrack(mood, dropIntent)
+  const resolved = await resolveCuratedTrack(track, siteOrigin)
+  if (resolved.audioUrl.startsWith('http') || !siteOrigin) return resolved
+
   for (const backup of CURATED_FALLBACK_TRACKS) {
     if (backup.id === track.id) continue
     const url = await fetchFreesoundPreviewUrl(backup.freesoundId)
@@ -177,12 +194,5 @@ export async function resolveCuratedFallback(
     }
   }
 
-  return {
-    audioUrl: selfHosted,
-    title: track.title,
-    creator: track.creator,
-    dropSeconds: track.dropSeconds,
-    fallbackReason: 'curated_library',
-    trackId: track.id,
-  }
+  return resolved
 }
