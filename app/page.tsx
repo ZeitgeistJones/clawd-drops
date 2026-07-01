@@ -45,10 +45,30 @@ const CLAWD_DEFAULT = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-dr
 
 type MusicMode = 'ai' | 'my-song' | 'find-song'
 
+type MusicTrackPick = {
+  audioUrl: string
+  title?: string
+  creator?: string
+  source?: string
+  dropSeconds?: number
+  fallbackReason?: string
+}
+
 function getClipDurations(clipCount: number, buildDuration: number, dropDuration: number, singleDuration: number): number[] {
   if (clipCount <= 1) return [singleDuration]
   if (clipCount === 2) return [buildDuration, dropDuration]
   return Array.from({ length: clipCount }, (_, i) => (i === clipCount - 1 ? dropDuration : buildDuration))
+}
+
+const trackNavBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: '1px solid #222',
+  borderRadius: 3,
+  padding: '4px 10px',
+  fontSize: 10,
+  color: '#666',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 }
 
 function estimateMinutes(isFlipbook: boolean, clipCount: number, poseCount: number, buildDuration: number, dropDuration: number, singleDuration: number) {
@@ -121,7 +141,12 @@ export default function Home() {
   const [log, setLog] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioInputRef = useRef<HTMLInputElement>(null)
+  const previewAudioRef = useRef<HTMLAudioElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
+
+  const [trackCandidates, setTrackCandidates] = useState<MusicTrackPick[]>([])
+  const [selectedTrackIndex, setSelectedTrackIndex] = useState(0)
+  const [tracksLoading, setTracksLoading] = useState(false)
 
   const isFlipbook = selectedModel === 'flipbook'
   const addLog = (msg: string) => setLog(prev => [...prev, msg])
@@ -129,7 +154,47 @@ export default function Home() {
   const currentIndex = stageIndex(stage)
   const isRunning = ![STAGES.IDLE, STAGES.DONE, STAGES.ERROR].includes(stage)
   const estMinutes = estimateMinutes(isFlipbook, clipCount, poseCount, buildDuration, dropDuration, duration)
-  const canDrop = goal.trim() && (musicMode !== 'my-song' || !!audioUrl)
+  const canDrop = goal.trim()
+    && (musicMode !== 'my-song' || !!audioUrl)
+    && (musicMode !== 'find-song' || trackCandidates.length > 0)
+
+  const selectedTrack = trackCandidates[selectedTrackIndex] ?? null
+
+  async function browseTracks() {
+    const mood = vibeDescription.trim() || goal.trim()
+    if (!mood) {
+      setError('Add a vibe or goal before previewing tracks')
+      return
+    }
+    setTracksLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/browse-music', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mood, limit: 5 }),
+      })
+      const data = await res.json()
+      if (data.error && !data.tracks?.length) throw new Error(data.error)
+      const tracks: MusicTrackPick[] = data.tracks || []
+      if (tracks.length === 0) throw new Error('No tracks found — try a different vibe')
+      setTrackCandidates(tracks)
+      setSelectedTrackIndex(0)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Track preview failed')
+      setTrackCandidates([])
+    } finally {
+      setTracksLoading(false)
+    }
+  }
+
+  function shiftTrack(delta: number) {
+    if (trackCandidates.length === 0) return
+    setSelectedTrackIndex(i => {
+      const next = (i + delta + trackCandidates.length) % trackCandidates.length
+      return next
+    })
+  }
 
   async function handleImageFile(file: File) {
     const preview = URL.createObjectURL(file)
@@ -195,7 +260,7 @@ export default function Home() {
     clipDurations: number[]
   }) {
     setStage(STAGES.SYNCING)
-    addLog('Sending to Manus for sync...')
+    addLog('Sending to Manus (strict time budget — effects if time allows)...')
     const syncRes = await fetch('/api/sync-video', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -291,24 +356,13 @@ export default function Home() {
               : 'Using library fallback track.'
         )
       } else if (musicMode === 'find-song') {
-        setStage(STAGES.GENERATING_MUSIC)
-        addLog('Searching CC0 library (Freesound / Jamendo)...')
-        const musicRes = await fetch('/api/generate-music', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mood: vibeDescription || goal }),
-        })
-        const musicResult = await musicRes.json()
-        if (!musicResult.audioUrl) throw new Error(musicResult.error || 'Library search failed')
-        musicData = { audioUrl: musicResult.audioUrl, title: musicResult.title }
-        curatedDropSeconds = musicResult.dropSeconds
-        if (musicResult.source === 'fallback') {
-          addLog(
-            `Using curated drop: ${musicResult.title || 'CC0 track'} (${musicResult.fallbackReason || 'library search empty'})`
-          )
-        } else {
-          addLog(`Found: ${musicResult.title || 'CC0 track'} (${musicResult.source})`)
+        const pick = trackCandidates[selectedTrackIndex]
+        if (!pick?.audioUrl) {
+          throw new Error('Preview tracks and pick one before dropping')
         }
+        musicData = { audioUrl: pick.audioUrl, title: pick.title }
+        curatedDropSeconds = pick.dropSeconds
+        addLog(`Using: ${pick.title || 'CC0 track'} (${pick.source}${pick.fallbackReason ? ` — ${pick.fallbackReason}` : ''})`)
       } else {
         if (!audioUrl) throw new Error('Upload an audio file for My Song mode')
         musicData = { audioUrl }
@@ -556,7 +610,11 @@ export default function Home() {
             { id: 'find-song', label: 'Find Song' },
           ]}
           value={musicMode}
-          onChange={v => setMusicMode(v as MusicMode)}
+          onChange={v => {
+            setMusicMode(v as MusicMode)
+            setTrackCandidates([])
+            setSelectedTrackIndex(0)
+          }}
           disabled={isRunning}
         />
         <ToggleGroup
@@ -716,13 +774,65 @@ export default function Home() {
           {musicMode === 'find-song' && (
             <>
               <div style={{ height: 1, background: '#111' }} />
-              <div style={{ padding: '10px 18px' }}>
+              <div style={{ padding: '10px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
-                  type="text" value={vibeDescription} onChange={e => setVibeDescription(e.target.value)}
-                  placeholder="Vibe (e.g. melancholy, late night, cinematic)"
+                  type="text"
+                  value={vibeDescription}
+                  onChange={e => {
+                    setVibeDescription(e.target.value)
+                    setTrackCandidates([])
+                    setSelectedTrackIndex(0)
+                  }}
+                  placeholder="Vibe (e.g. heavy sub bass drop dubstep 808 trap)"
                   disabled={isRunning}
                   style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
                 />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => browseTracks().catch(() => {})}
+                    disabled={isRunning || tracksLoading}
+                    style={{
+                      background: 'transparent', border: '1px solid #333', borderRadius: 3,
+                      padding: '6px 12px', fontSize: 10, color: tracksLoading ? '#333' : '#888',
+                      cursor: isRunning || tracksLoading ? 'not-allowed' : 'pointer',
+                      fontFamily: 'inherit', letterSpacing: '0.1em',
+                    }}
+                  >
+                    {tracksLoading ? 'SEARCHING...' : 'PREVIEW TRACKS'}
+                  </button>
+                  {trackCandidates.length > 0 && (
+                    <>
+                      <button type="button" onClick={() => shiftTrack(-1)} disabled={isRunning} style={trackNavBtnStyle}>◀</button>
+                      <span style={{ fontSize: 10, color: '#555', minWidth: 52, textAlign: 'center' }}>
+                        {selectedTrackIndex + 1} / {trackCandidates.length}
+                      </span>
+                      <button type="button" onClick={() => shiftTrack(1)} disabled={isRunning} style={trackNavBtnStyle}>▶</button>
+                      <button
+                        type="button"
+                        onClick={() => previewAudioRef.current?.play().catch(() => {})}
+                        disabled={isRunning || !selectedTrack}
+                        style={trackNavBtnStyle}
+                      >
+                        ▶ PLAY
+                      </button>
+                    </>
+                  )}
+                </div>
+                {selectedTrack && (
+                  <div style={{ fontSize: 11, color: '#666', lineHeight: 1.4 }}>
+                    <div style={{ color: '#aaa' }}>{selectedTrack.title || 'Untitled track'}</div>
+                    <div style={{ fontSize: 10, color: '#444' }}>
+                      {selectedTrack.creator ? `${selectedTrack.creator} · ` : ''}{selectedTrack.source}
+                    </div>
+                  </div>
+                )}
+                {!trackCandidates.length && !tracksLoading && (
+                  <p style={{ margin: 0, fontSize: 10, color: '#333' }}>
+                    Preview bass-drop picks before you burn video credits.
+                  </p>
+                )}
+                <audio ref={previewAudioRef} src={selectedTrack?.audioUrl || undefined} preload="metadata" style={{ display: 'none' }} />
               </div>
             </>
           )}

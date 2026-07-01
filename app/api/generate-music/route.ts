@@ -5,7 +5,7 @@ export async function POST(req: NextRequest) {
   try {
     const { mood } = await req.json()
     const siteOrigin = req.nextUrl.origin
-    const result = await searchLibraryMusic(mood || 'edm drop electronic', siteOrigin)
+    const result = await searchLibraryMusic(mood || 'dubstep bass drop 808', siteOrigin)
     return NextResponse.json({
       audioUrl: result.audioUrl,
       source: result.source,

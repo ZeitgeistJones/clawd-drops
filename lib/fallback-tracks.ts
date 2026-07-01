@@ -68,13 +68,17 @@ export type CuratedFallbackResult = {
 
 function scoreTrackForMood(track: CuratedFallbackTrack, mood: string, dropIntent: boolean): number {
   const normalized = mood.toLowerCase()
+  const text = track.tags.join(' ')
   let score = 0
   for (const tag of track.tags) {
     if (normalized.includes(tag)) score += 3
+    if (text.includes(tag)) score += 1
   }
   if (dropIntent) {
-    if (track.tags.includes('drop')) score += 4
-    if (track.tags.includes('edm') || track.tags.includes('bass')) score += 2
+    if (track.tags.includes('dubstep') || track.tags.includes('trap')) score += 8
+    if (track.tags.includes('bass')) score += 4
+    if (track.id.includes('dubstep') || track.id.includes('sahara')) score += 6
+    if (track.id.includes('future') || track.id.includes('bounce') || track.id.includes('heaven')) score -= 6
   }
   return score
 }

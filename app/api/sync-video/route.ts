@@ -38,6 +38,25 @@ function totalClipSeconds(durations: number[]): number {
   return durations.reduce((sum, d) => sum + d, 0)
 }
 
+function buildManusEffectPolicy(totalSeconds: number): string {
+  return [
+    '',
+    '--- TIME BUDGET (strict) ---',
+    'This is a BRIEF edit job. You have a strict time budget — finish fast and export.',
+    'Priority order: (1) required deliverables below, (2) optional effects ONLY if time clearly remains.',
+    'If time is tight, ship the required edit with zero optional effects. Do not run multiple render passes.',
+    'You decide how much optional polish fits in the time you have — fewer effects is better than missing the deadline.',
+    '',
+    'REQUIRED (never skip): download clips + audio, trim audio to exact length, concat clips, hard cut at drop, export MP4.',
+    '',
+    'OPTIONAL (apply only what you can finish quickly, highest impact first):',
+    '  • Fast (~seconds): brightness flash + saturation bump at the drop cut',
+    '  • Medium (~minute): light screen shake on the drop clip',
+    '  • Skip if rushed: slow-mo, speed ramps, RGB split, heavy color grading, extra transitions',
+    `Target: a ${totalSeconds}s hype edit — punchy cut on the drop matters more than fancy VFX.`,
+  ].join('\n')
+}
+
 function buildManusFinalInstructions(opts: {
   totalSeconds: number
   dropSec: number
@@ -60,8 +79,8 @@ function buildManusFinalInstructions(opts: {
     musicMode === 'find-song'
       ? 'Use only the provided CC0 audio URL; trim it to fit the export length.'
       : 'Trim provided audio to fit the export length.',
-    'Apply consistent color grading across all clips.',
     'Export as MP4 and return only the final video URL.',
+    buildManusEffectPolicy(totalSeconds),
   ]
   return lines.join('\n')
 }
@@ -106,7 +125,7 @@ export async function POST(req: NextRequest) {
     if (mode === 'flipbook') {
       if (!frames.length) throw new Error('No flipbook frames provided')
       const frameList = buildFrameList(frames)
-      content = `/video-sync Here are ${frames.length} sequential character images showing an emotional arc:\n${frameList}\n\n${audioSection}\n\nStitch these into a fast flipbook-style video — quick cuts between frames, building tension, with the final frame landing on the music drop around second ${dropSec}. Apply subtle VFX at the drop — brightness flash and saturation boost.${finalInstructions}`
+      content = `/video-sync Here are ${frames.length} sequential character images showing an emotional arc:\n${frameList}\n\n${audioSection}\n\nStitch into a flipbook video — quick cuts, land on the drop around second ${dropSec}. Required: fast stitch + export. Optional if time allows: brief flash at drop.${finalInstructions}`
     } else {
       if (!clips.length) throw new Error('No clips provided')
       const clipList = buildClipList(clips, durations)
@@ -114,9 +133,9 @@ export async function POST(req: NextRequest) {
         'Clip durations are provided above — loop or trim clips to fit the audio without re-probing duration.'
 
       if (musicMode === 'find-song') {
-        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\nThis is a CC0 track pre-selected by the app. Use only the provided audio URL.\n${durationNote} Cut between clips at the drop around second ${dropSec}. Apply VFX at cut points — brightness flash, saturation boost, RGB split glitch, screen shake. Apply slow-mo to the build clip and speed ramp into the drop.${finalInstructions}`
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\nThis is a CC0 track pre-selected by the app. Use only the provided audio URL.\n${durationNote} Hard-cut from build to drop at second ${dropSec}. Required: trim audio, concat, export. Optional effects only if your time budget allows — see TIME BUDGET below.${finalInstructions}`
       } else {
-        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\n${durationNote} Cut between clips at the most impactful moment around second ${dropSec}. Apply subtle VFX at the cut — brightness flash and saturation boost.${finalInstructions}`
+        content = `/video-sync Here are ${clips.length} video clips:\n${clipList}\n\n${audioSection}\n\n${durationNote} Hard-cut at second ${dropSec}. Required: trim audio, concat, export. Optional effects only if your time budget allows — see TIME BUDGET below.${finalInstructions}`
       }
     }
 
