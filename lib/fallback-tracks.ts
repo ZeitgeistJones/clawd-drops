@@ -31,7 +31,7 @@ export const CURATED_FALLBACK_TRACKS: CuratedFallbackTrack[] = [
     license: 'CC0',
     dropSeconds: 14,
     bpm: 160,
-    tags: ['future', 'bass', 'drop', 'edm', 'bounce', 'festival', 'epic'],
+    tags: ['future', 'bass', 'drop', 'edm', 'bounce', 'festival', 'epic', 'hook', 'catchy'],
   },
   {
     id: 'future-bounce-125',
@@ -42,7 +42,7 @@ export const CURATED_FALLBACK_TRACKS: CuratedFallbackTrack[] = [
     license: 'CC0',
     dropSeconds: 16,
     bpm: 125,
-    tags: ['bounce', 'drop', 'dance', 'club', 'edm', 'bass', 'build'],
+    tags: ['bounce', 'drop', 'dance', 'club', 'edm', 'bass', 'build', 'hook', 'catchy', 'groove'],
   },
   {
     id: 'dubstep-sahara-140',
@@ -78,7 +78,11 @@ function scoreTrackForMood(track: CuratedFallbackTrack, mood: string, dropIntent
     if (track.tags.includes('dubstep') || track.tags.includes('trap')) score += 8
     if (track.tags.includes('bass')) score += 4
     if (track.id.includes('dubstep') || track.id.includes('sahara')) score += 6
-    if (track.id.includes('future') || track.id.includes('bounce') || track.id.includes('heaven')) score -= 6
+    if (normalized.includes('hook') || normalized.includes('catchy') || normalized.includes('pop')) {
+      if (track.tags.includes('hook') || track.tags.includes('catchy') || track.tags.includes('bounce')) score += 10
+    } else if (track.id.includes('future') || track.id.includes('bounce') || track.id.includes('heaven')) {
+      score -= 2
+    }
   }
   return score
 }

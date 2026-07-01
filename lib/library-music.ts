@@ -29,10 +29,23 @@ const BROWSE_EXCLUDE_TERMS = [
   'indie folk', 'country', 'ballad', 'singer-songwriter', 'world music',
 ] as const
 
+const ANNOYING_EXCLUDE_TERMS = [
+  'chipmunk', 'earrape', 'ear-rape', 'meme', 'novelty', 'circus', 'carnival',
+  'annoying', 'screech', 'squeal', 'squeaky', 'alarm', 'siren', 'scream',
+  'harsh', 'abrasive', 'parody', 'comedy', 'joke', 'ringtone', 'tiktok',
+  'whiny', 'irritating', 'happy hardcore', 'speedcore', 'nightcore',
+] as const
+
+const HOOK_PREFER_TERMS = [
+  'hook', 'catchy', 'chorus', 'anthem', 'groove', 'memorable', 'melodic',
+  'synth', 'electro', 'dance', 'club', 'house', 'festival', 'build',
+  'bounce', 'future', 'pop', 'banger', 'rise', 'uplifting', 'energetic',
+] as const
+
 const IDEAL_DROP_MIN = 4
 const IDEAL_DROP_MAX = 8
 const MAX_BROWSE_DROP_SEC = 25
-const PREVIEW_LEAD_SEC = 3
+const PREVIEW_LEAD_SEC = 5
 
 const BRIGHT_AVOID_TERMS = [
   'future', 'bounce', 'pluck', 'melody', 'lead', 'festival', 'sparkle', 'chiptune',
@@ -69,6 +82,7 @@ export type LibraryMusicResult = {
   previewStartSeconds?: number
   durationSeconds?: number
   recommended?: boolean
+  dropStyle?: 'bass' | 'hook'
 }
 
 type FreesoundTrack = {
@@ -86,6 +100,11 @@ function estimateDropSeconds(title: string, tags: string, durationSec?: number):
   }
   if (/\b(loop|loops)\b/.test(text) && durationSec != null) {
     return Math.min(12, Math.max(IDEAL_DROP_MIN, Math.round(durationSec * 0.25)))
+  }
+  if (/\b(hook|catchy|chorus|anthem|groove|melodic|pop)\b/.test(text)) {
+    return Math.min(12, Math.max(IDEAL_DROP_MIN, durationSec != null
+      ? Math.round(durationSec * 0.2)
+      : 8))
   }
   if (/\b(dubstep|trap|808|bassdrop|bass-drop|brostep|wobble)\b/.test(text)) return 6
   if (durationSec != null && durationSec <= 45) {
@@ -135,12 +154,73 @@ function textContainsTerm(text: string, terms: readonly string[]): boolean {
   return terms.some(term => normalized.includes(term))
 }
 
-function isExcludedFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): boolean {
+function isAnnoyingTrack(text: string): boolean {
+  return textContainsTerm(text, ANNOYING_EXCLUDE_TERMS)
+}
+
+function classifyDropStyle(text: string): 'bass' | 'hook' {
+  const lower = text.toLowerCase()
+  let bass = 0
+  let hook = 0
+  for (const term of BASS_PREFER_TERMS) {
+    if (lower.includes(term)) bass += 2
+  }
+  for (const term of HOOK_PREFER_TERMS) {
+    if (lower.includes(term)) hook += 1
+  }
+  if (/\b(hook|catchy|chorus|anthem|melodic|pop|groove)\b/.test(lower)) hook += 4
+  if (/\b(dubstep|trap|808|sub|wobble|brostep|growl)\b/.test(lower)) bass += 4
+  return hook > bass ? 'hook' : 'bass'
+}
+
+function scoreBrowseTrackText(text: string): number {
+  const lower = text.toLowerCase()
+  if (isAnnoyingTrack(lower)) return -25
+  if (textContainsTerm(lower, BROWSE_EXCLUDE_TERMS)) return -15
+  if (textContainsTerm(lower, FREESOUND_POST_FILTER_EXCLUDE)) return -15
+  if (textContainsTerm(lower, SOFT_MUSIC_TERMS)) return -8
+
+  let score = 0
+  let bassHits = 0
+  let hookHits = 0
+
+  for (const term of DROP_PREFER_TERMS) {
+    if (lower.includes(term)) score += 2
+  }
+  for (const term of BASS_PREFER_TERMS) {
+    if (lower.includes(term)) {
+      score += 4
+      bassHits += 1
+    }
+  }
+  for (const term of HOOK_PREFER_TERMS) {
+    if (lower.includes(term)) {
+      score += 3
+      hookHits += 1
+    }
+  }
+  if (lower.includes('drop')) score += 4
+  if (/\b(hook|catchy|chorus|anthem)\b/.test(lower)) score += 6
+  if (bassHits > 0 && hookHits > 0) score += 5
+
+  return score
+}
+
+function isExcludedBrowseTrack(text: string): boolean {
+  return scoreBrowseTrackText(text) < 0
+}
+
+function isExcludedFreesoundTrack(track: FreesoundTrack, dropIntent: boolean, browse = false): boolean {
   const haystacks = [track.name || '', ...(track.tags || [])]
   for (const text of haystacks) {
+    if (isAnnoyingTrack(text)) return true
     if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
     if (textContainsTerm(text, BROWSE_EXCLUDE_TERMS)) return true
-    if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
+    if (browse) {
+      if (isExcludedBrowseTrack(text.toLowerCase())) return true
+    } else if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) {
+      return true
+    }
   }
   return false
 }
@@ -165,10 +245,10 @@ function scoreTrackText(text: string, dropIntent: boolean): number {
   return score
 }
 
-function scoreFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): number {
-  if (isExcludedFreesoundTrack(track, dropIntent)) return -1
+function scoreFreesoundTrack(track: FreesoundTrack, dropIntent: boolean, browse = false): number {
   const haystacks = [track.name || '', ...(track.tags || [])].join(' ').toLowerCase()
-  return scoreTrackText(haystacks, dropIntent)
+  if (isExcludedFreesoundTrack(track, dropIntent, browse)) return -1
+  return browse ? scoreBrowseTrackText(haystacks) : scoreTrackText(haystacks, dropIntent)
 }
 
 function hasDropIntent(mood: string, tokens: string[]): boolean {
@@ -226,6 +306,32 @@ function buildFreesoundQueries(tokens: string[], dropIntent: boolean): string[] 
   return [strict, broad]
 }
 
+function buildBrowseFreesoundQueries(tokens: string[]): string[] {
+  const moodPart = tokens
+    .filter(t => !['music', 'cinematic', 'instrumental', 'dark', 'epic'].includes(t))
+    .slice(0, 2)
+    .join(' ')
+
+  return [
+    `${moodPart} dubstep trap 808 sub bass drop`.trim(),
+    'dubstep bass drop 808 sub wobble',
+    'catchy hook edm drop chorus instrumental',
+    'electro pop dance anthem build drop loop',
+    'festival edm groove memorable drop beat',
+    'house club banger drop instrumental',
+  ]
+}
+
+function buildJamendoBrowseTagSets(tokens: string[]): string[][] {
+  const moodTags = tokens.filter(t => !['music', 'instrumental', 'drop'].includes(t)).slice(0, 2)
+  return [
+    ['dubstep', 'trap', 'bass'],
+    ['electronic', 'dance', 'club'],
+    ['pop', 'catchy', 'electronic'],
+    moodTags.length ? [...moodTags, 'drop'] : ['edm', 'drop', 'dance'],
+  ]
+}
+
 function buildJamendoTags(tokens: string[], dropIntent: boolean): string[] {
   if (dropIntent) {
     return ['dubstep', 'trap', 'bass', '808']
@@ -237,12 +343,13 @@ function pickTopFreesoundTracks(
   results: FreesoundTrack[],
   dropIntent: boolean,
   strictScoring: boolean,
-  limit: number
+  limit: number,
+  browse = false
 ) {
   const ranked: ScoredCandidate[] = []
 
   for (const track of results) {
-    const score = scoreFreesoundTrack(track, dropIntent)
+    const score = scoreFreesoundTrack(track, dropIntent, browse)
     if (score < 0) continue
 
     const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
@@ -251,6 +358,7 @@ function pickTopFreesoundTracks(
     if (dropIntent && strictScoring && score === 0) continue
 
     const tags = (track.tags || []).join(' ')
+    const trackText = `${track.name || ''} ${tags}`.toLowerCase()
     const durationSeconds = typeof track.duration === 'number' ? track.duration : undefined
     const dropSeconds = estimateDropSeconds(track.name || '', tags, durationSeconds)
     if (dropSeconds > MAX_BROWSE_DROP_SEC) continue
@@ -262,6 +370,7 @@ function pickTopFreesoundTracks(
       source: 'freesound',
       durationSeconds,
       dropSeconds,
+      dropStyle: classifyDropStyle(trackText),
       score: score + scoreEarlyDrop(dropSeconds),
     })
   }
@@ -335,34 +444,31 @@ async function searchFreesound(query: string, opts: FreesoundSearchOpts) {
   return null
 }
 
-function isExcludedJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean): boolean {
+function isExcludedJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean, browse = false): boolean {
   const text = `${track.name || ''} ${typeof track.tags === 'string' ? track.tags : ''}`.toLowerCase()
+  if (isAnnoyingTrack(text)) return true
   if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
   if (textContainsTerm(text, BROWSE_EXCLUDE_TERMS)) return true
+  if (browse) return isExcludedBrowseTrack(text)
   if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
   return false
 }
 
-function scoreJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean): number {
-  if (isExcludedJamendoTrack(track, dropIntent)) return -1
+function scoreJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean, browse = false): number {
+  if (isExcludedJamendoTrack(track, dropIntent, browse)) return -1
   const text = `${track.name || ''} ${typeof track.tags === 'string' ? track.tags : ''}`.toLowerCase()
-  return scoreTrackText(text, dropIntent)
+  return browse ? scoreBrowseTrackText(text) : scoreTrackText(text, dropIntent)
 }
 
-async function listJamendoCandidates(
-  tokens: string[],
-  dropIntent: boolean,
-  limit: number
-): Promise<ScoredCandidate[]> {
+async function fetchJamendoByTags(tags: string[], limit: number) {
   const clientId = process.env.JAMENDO_CLIENT_ID
   if (!clientId) return []
 
-  const jamendoTags = buildJamendoTags(tokens, dropIntent)
   const url = new URL('https://api.jamendo.com/v3.0/tracks/')
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('format', 'json')
-  url.searchParams.set('limit', '30')
-  url.searchParams.set('tags', jamendoTags.join('+'))
+  url.searchParams.set('limit', String(Math.min(20, limit)))
+  url.searchParams.set('tags', tags.join('+'))
   url.searchParams.set('vocalinstrumental', 'instrumental')
   url.searchParams.set('order', 'relevance_desc')
 
@@ -370,27 +476,51 @@ async function listJamendoCandidates(
   if (!res.ok) return []
 
   const data = await res.json()
-  const results = data.results || []
-  const ranked: ScoredCandidate[] = []
+  return data.results || []
+}
 
-  for (const track of results) {
-    const score = scoreJamendoTrack(track, dropIntent)
-    if (score < 0) continue
-    const audioUrl = track.audio || track.audiodownload
-    if (!audioUrl) continue
-    const durationSeconds = typeof track.duration === 'number' ? track.duration : undefined
-    const tags = typeof track.tags === 'string' ? track.tags : ''
-    const dropSeconds = estimateDropSeconds(track.name || '', tags, durationSeconds)
-    if (dropSeconds > MAX_BROWSE_DROP_SEC) continue
-    ranked.push({
-      audioUrl,
-      title: track.name,
-      creator: track.artist_name,
-      source: 'jamendo',
-      durationSeconds,
-      dropSeconds,
-      score: score + scoreEarlyDrop(dropSeconds),
-    })
+async function listJamendoCandidates(
+  tokens: string[],
+  dropIntent: boolean,
+  limit: number,
+  browse = false
+): Promise<ScoredCandidate[]> {
+  const clientId = process.env.JAMENDO_CLIENT_ID
+  if (!clientId) return []
+
+  const tagSets = browse
+    ? buildJamendoBrowseTagSets(tokens)
+    : [buildJamendoTags(tokens, dropIntent)]
+
+  const ranked: ScoredCandidate[] = []
+  const seenIds = new Set<number>()
+
+  for (const tags of tagSets) {
+    const results = await fetchJamendoByTags(tags, limit)
+    for (const track of results) {
+      if (track.id != null && seenIds.has(track.id)) continue
+      if (track.id != null) seenIds.add(track.id)
+
+      const score = scoreJamendoTrack(track, dropIntent, browse)
+      if (score < 0) continue
+      const audioUrl = track.audio || track.audiodownload
+      if (!audioUrl) continue
+      const durationSeconds = typeof track.duration === 'number' ? track.duration : undefined
+      const tagsText = typeof track.tags === 'string' ? track.tags : ''
+      const trackText = `${track.name || ''} ${tagsText}`.toLowerCase()
+      const dropSeconds = estimateDropSeconds(track.name || '', tagsText, durationSeconds)
+      if (dropSeconds > MAX_BROWSE_DROP_SEC) continue
+      ranked.push({
+        audioUrl,
+        title: track.name,
+        creator: track.artist_name,
+        source: 'jamendo',
+        durationSeconds,
+        dropSeconds,
+        dropStyle: classifyDropStyle(trackText),
+        score: score + scoreEarlyDrop(dropSeconds),
+      })
+    }
   }
 
   ranked.sort((a, b) => b.score - a.score)
@@ -586,8 +716,44 @@ function mergeCandidates(existing: ScoredCandidate[], incoming: ScoredCandidate[
   return Array.from(byKey.values()).sort((a, b) => b.score - a.score)
 }
 
+function diversifyBrowseResults(sorted: ScoredCandidate[], limit: number): ScoredCandidate[] {
+  const bass = sorted.filter(c => c.dropStyle !== 'hook')
+  const hook = sorted.filter(c => c.dropStyle === 'hook')
+  const picked: ScoredCandidate[] = []
+  const used = new Set<string>()
+  let bi = 0
+  let hi = 0
+
+  const take = (item: ScoredCandidate | undefined) => {
+    if (!item) return
+    const key = candidateKey(item)
+    if (used.has(key)) return
+    used.add(key)
+    picked.push(item)
+  }
+
+  const hookTarget = Math.min(hook.length, Math.max(2, Math.floor(limit * 0.35)))
+  while (picked.length < hookTarget && hi < hook.length) {
+    take(hook[hi++])
+  }
+
+  while (picked.length < limit && (bi < bass.length || hi < hook.length)) {
+    take(bass[bi++])
+    if (picked.length >= limit) break
+    take(hook[hi++])
+  }
+
+  for (const item of sorted) {
+    if (picked.length >= limit) break
+    take(item)
+  }
+
+  return picked.slice(0, limit)
+}
+
 function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): LibraryMusicResult[] {
   const enriched = candidates.map(c => {
+    const text = `${c.title || ''} ${c.query || ''}`.toLowerCase()
     const dropSeconds = c.dropSeconds ?? estimateDropSeconds(
       c.title || '',
       c.query || '',
@@ -595,10 +761,12 @@ function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): Li
     )
     const previewStartSeconds = previewStartFromDrop(dropSeconds)
     const earlyBonus = c.dropSeconds == null ? scoreEarlyDrop(dropSeconds) : 0
+    const dropStyle = c.dropStyle ?? classifyDropStyle(text)
     return {
       ...c,
       dropSeconds,
       previewStartSeconds,
+      dropStyle,
       score: c.score + earlyBonus,
     }
   })
@@ -608,7 +776,7 @@ function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): Li
     return (c.dropSeconds ?? 99) <= MAX_BROWSE_DROP_SEC && c.score > -10
   })
   filtered.sort((a, b) => b.score - a.score)
-  const top = filtered.slice(0, limit)
+  const top = diversifyBrowseResults(filtered, limit)
   const topScore = top[0]?.score ?? 0
 
   return top.map((c, i) => {
@@ -633,15 +801,15 @@ export async function browseLibraryMusic(
   siteOrigin?: string,
   limit = 8
 ): Promise<LibraryMusicResult[]> {
-  const tokens = extractMoodTokens(mood || 'dubstep bass drop 808')
+  const tokens = extractMoodTokens(mood || 'dubstep bass drop catchy hook')
   const dropIntent = hasDropIntent(mood, tokens) || true
-  const queries = buildFreesoundQueries(tokens, dropIntent)
+  const queries = buildBrowseFreesoundQueries(tokens)
   const fetchLimit = Math.max(limit * 2, 16)
   let merged: ScoredCandidate[] = []
 
   for (const track of CURATED_FALLBACK_TRACKS) {
     const curated = await resolveCuratedTrack(track, siteOrigin)
-    const moodScore = scoreTrackText(`${mood} ${track.tags.join(' ')}`, true)
+    const trackText = `${mood} ${track.tags.join(' ')}`
     merged = mergeCandidates(merged, [{
       audioUrl: curated.audioUrl,
       title: curated.title,
@@ -649,11 +817,12 @@ export async function browseLibraryMusic(
       source: 'fallback',
       dropSeconds: track.dropSeconds,
       fallbackReason: curated.fallbackReason,
-      score: moodScore + scoreEarlyDrop(track.dropSeconds) + (track.id.includes('dubstep') ? 8 : 0),
+      dropStyle: classifyDropStyle(track.tags.join(' ')),
+      score: scoreBrowseTrackText(trackText) + scoreEarlyDrop(track.dropSeconds),
     }])
   }
 
-  const jamendo = await listJamendoCandidates(tokens, dropIntent, fetchLimit)
+  const jamendo = await listJamendoCandidates(tokens, dropIntent, fetchLimit, true)
   merged = mergeCandidates(merged, jamendo)
 
   const fsOpts = { ...RELAXED_FS, dropIntent: true as const }
@@ -661,7 +830,7 @@ export async function browseLibraryMusic(
     try {
       const results = await fetchFreesoundResults(query, fsOpts)
       if (!results?.length) continue
-      const top = pickTopFreesoundTracks(results, dropIntent, false, Math.ceil(fetchLimit / 2))
+      const top = pickTopFreesoundTracks(results, dropIntent, false, Math.ceil(fetchLimit / 2), true)
       merged = mergeCandidates(merged, top.map(track => ({ ...track, query })))
     } catch {
       // continue

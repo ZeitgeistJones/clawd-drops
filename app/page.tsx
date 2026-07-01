@@ -53,6 +53,7 @@ type MusicTrackPick = {
   dropSeconds?: number
   previewStartSeconds?: number
   recommended?: boolean
+  dropStyle?: 'bass' | 'hook'
   fallbackReason?: string
 }
 
@@ -197,7 +198,7 @@ export default function Home() {
     if (!audio || !selectedTrack?.audioUrl) return
 
     const start = selectedTrack.previewStartSeconds
-      ?? Math.max(0, (selectedTrack.dropSeconds ?? 7) - 3)
+      ?? Math.max(0, (selectedTrack.dropSeconds ?? 7) - 5)
 
     const seekAndPlay = async () => {
       try {
@@ -838,7 +839,7 @@ export default function Home() {
                     setTrackCandidates([])
                     setSelectedTrackIndex(0)
                   }}
-                  placeholder="Vibe (e.g. heavy sub bass drop dubstep 808 trap)"
+                  placeholder="Vibe (e.g. heavy bass drop, catchy hook, dubstep 808 trap)"
                   disabled={isRunning}
                   style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
                 />
@@ -902,18 +903,32 @@ export default function Home() {
                           RECOMMENDED
                         </span>
                       )}
+                      {selectedTrack.dropStyle && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, letterSpacing: '0.12em',
+                          color: selectedTrack.dropStyle === 'hook' ? '#6eb5ff' : '#888',
+                          border: `1px solid ${selectedTrack.dropStyle === 'hook' ? '#6eb5ff33' : '#333'}`,
+                          borderRadius: 2, padding: '2px 6px',
+                        }}>
+                          {selectedTrack.dropStyle === 'hook' ? 'HOOK DROP' : 'BASS DROP'}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 10, color: '#444' }}>
                       {selectedTrack.creator ? `${selectedTrack.creator} · ` : ''}{selectedTrack.source}
                       {selectedTrack.dropSeconds != null && (
-                        <> · drop ~{selectedTrack.dropSeconds}s</>
+                        <>
+                          {' · build from ~'}
+                          {selectedTrack.previewStartSeconds ?? Math.max(0, selectedTrack.dropSeconds - 5)}
+                          s · drop ~{selectedTrack.dropSeconds}s
+                        </>
                       )}
                     </div>
                   </div>
                 )}
                 {!trackCandidates.length && !tracksLoading && (
                   <p style={{ margin: 0, fontSize: 10, color: '#333' }}>
-                    Preview bass-drop picks — PLAY DROP jumps straight to the hit (within ~3s).
+                    PLAY DROP starts ~5s before the hit so you feel the build.
                   </p>
                 )}
                 <audio
