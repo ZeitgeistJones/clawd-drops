@@ -1,4 +1,4 @@
-import { CURATED_FALLBACK_TRACKS, resolveCuratedTrack } from './fallback-tracks'
+import { CURATED_FALLBACK_TRACKS, resolveCuratedFallback, resolveCuratedTrack } from './fallback-tracks'
 import { wrapPreviewAudioUrl } from './preview-audio'
 
 const FREESOUND_MUSIC_TAG = 'music'
