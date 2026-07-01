@@ -11,6 +11,7 @@ const STAGES = {
   ANALYZING_AUDIO: 'analyzing_audio',
   STYLING: 'styling',
   GENERATING_VIDEO: 'generating_video',
+  REVIEWING: 'reviewing',
   SYNCING: 'syncing',
   DONE: 'done',
   ERROR: 'error',
@@ -23,6 +24,7 @@ const STAGE_LABELS: Record<string, string> = {
   analyzing_audio: 'READING THE DROP',
   styling: 'STYLING CHARACTER',
   generating_video: 'GENERATING VIDEO',
+  reviewing: 'REVIEW BEFORE SYNC',
   syncing: 'SYNCING FRAMES',
   done: 'CLAWD DROPPED',
   error: 'PIPELINE FAILED',
@@ -30,7 +32,7 @@ const STAGE_LABELS: Record<string, string> = {
 
 const STAGE_ORDER = [
   'prompting', 'uploading_image', 'generating_music',
-  'analyzing_audio', 'styling', 'generating_video', 'syncing', 'done',
+  'analyzing_audio', 'styling', 'generating_video', 'reviewing', 'syncing', 'done',
 ]
 
 const MODELS = [
@@ -42,6 +44,21 @@ const MODELS = [
 const DURATIONS = [4, 5, 6, 8, 10]
 const POSE_COUNTS = [2, 3, 4, 5, 6]
 const CLAWD_DEFAULT = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
+
+type PendingSyncPayload = {
+  mode: 'video' | 'flipbook'
+  musicData: { audioUrl: string; title?: string }
+  audioData: BeatAnalysisResult
+  clipDurations: number[]
+}
+
+type ReviewContext = {
+  clipPrompts: string[]
+  styledImageUrl: string
+  videoModel: string
+  videoProvider: string
+  flipbookStyle: string
+}
 
 type MusicMode = 'ai' | 'my-song' | 'find-song'
 
@@ -144,23 +161,34 @@ export default function Home() {
   const [log, setLog] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioInputRef = useRef<HTMLInputElement>(null)
-  const previewAudioRef = useRef<HTMLAudioElement>(null)
-  const dropRef = useRef<HTMLDivElement>(null)
 
   const [trackCandidates, setTrackCandidates] = useState<MusicTrackPick[]>([])
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(0)
   const [tracksLoading, setTracksLoading] = useState(false)
   const [previewTrackCount, setPreviewTrackCount] = useState('8')
+  const [trackViewMode, setTrackViewMode] = useState<'list' | 'carousel'>('list')
+  const [reviewBeforeSync, setReviewBeforeSync] = useState(true)
+  const [reviewClips, setReviewClips] = useState<string[]>([])
+  const [reviewFrames, setReviewFrames] = useState<string[]>([])
+  const [flaggedClips, setFlaggedClips] = useState<number[]>([])
+  const [flaggedFrames, setFlaggedFrames] = useState<number[]>([])
+  const [pendingSync, setPendingSync] = useState<PendingSyncPayload | null>(null)
+  const [reviewContext, setReviewContext] = useState<ReviewContext | null>(null)
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null)
+  const listAudioRef = useRef<HTMLAudioElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
 
   const isFlipbook = selectedModel === 'flipbook'
   const addLog = (msg: string) => setLog(prev => [...prev, msg])
   const stageIndex = (s: string) => STAGE_ORDER.indexOf(s)
   const currentIndex = stageIndex(stage)
-  const isRunning = ![STAGES.IDLE, STAGES.DONE, STAGES.ERROR].includes(stage)
+  const isReviewing = stage === STAGES.REVIEWING
+  const isRunning = ![STAGES.IDLE, STAGES.DONE, STAGES.ERROR, STAGES.REVIEWING].includes(stage)
   const estMinutes = estimateMinutes(isFlipbook, clipCount, poseCount, buildDuration, dropDuration, duration)
   const canDrop = goal.trim()
     && (musicMode !== 'my-song' || !!audioUrl)
     && (musicMode !== 'find-song' || trackCandidates.length > 0)
+    && !isReviewing
 
   const selectedTrack = trackCandidates[selectedTrackIndex] ?? null
 
@@ -193,13 +221,13 @@ export default function Home() {
     }
   }
 
-  function playTrackPreview() {
-    const audio = previewAudioRef.current
-    if (!audio || !selectedTrack?.audioUrl) return
-
-    const start = selectedTrack.previewStartSeconds
-      ?? Math.max(0, (selectedTrack.dropSeconds ?? 7) - 5)
-
+  function playTrackAtIndex(index: number) {
+    const track = trackCandidates[index]
+    if (!track?.audioUrl) return
+    const audio = listAudioRef.current
+    if (!audio) return
+    const start = track.previewStartSeconds ?? Math.max(0, (track.dropSeconds ?? 7) - 5)
+    audio.src = track.audioUrl
     const seekAndPlay = async () => {
       try {
         const maxSeek = Number.isFinite(audio.duration) && audio.duration > 0
@@ -207,41 +235,175 @@ export default function Home() {
           : start
         audio.currentTime = Math.min(start, maxSeek)
         await audio.play()
-        setError(null)
       } catch {
-        setError('Preview blocked — check volume, then tap PLAY DROP again')
+        setError('Preview blocked — check volume and try again')
       }
     }
+    if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      void seekAndPlay()
+    } else {
+      audio.addEventListener('canplay', () => { void seekAndPlay() }, { once: true })
+      audio.load()
+    }
+  }
 
-    const waitForAudio = () => new Promise<void>((resolve, reject) => {
-      if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        resolve()
-        return
-      }
-      const onReady = () => {
-        cleanup()
-        resolve()
-      }
-      const onError = () => {
-        cleanup()
-        reject(new Error('load failed'))
-      }
-      const cleanup = () => {
-        audio.removeEventListener('canplay', onReady)
-        audio.removeEventListener('error', onError)
-      }
-      audio.addEventListener('canplay', onReady, { once: true })
-      audio.addEventListener('error', onError, { once: true })
-    })
+  function playTrackPreview() {
+    playTrackAtIndex(selectedTrackIndex)
+  }
 
-    void (async () => {
-      try {
-        await waitForAudio()
-        await seekAndPlay()
-      } catch {
-        setError('Could not load this preview — try ◀ ▶ another track')
+  async function pollSingleClip(
+    taskId: string,
+    provider: string,
+    clipDuration: number
+  ): Promise<string> {
+    for (let i = 0; i < 80; i++) {
+      await new Promise(r => setTimeout(r, 10000))
+      const pollRes = await fetch('/api/poll-video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId,
+          completedClips: [],
+          prompts: ['regen'],
+          imageUrl: reviewContext?.styledImageUrl || CLAWD_DEFAULT,
+          model: reviewContext?.videoModel || selectedModel,
+          duration: clipDuration,
+          totalClips: 1,
+          provider,
+        }),
+      })
+      const pollData = await pollRes.json()
+      if (pollData.error) throw new Error(pollData.error)
+      if (pollData.status === 'completed' && pollData.completedClips?.[0]) {
+        return pollData.completedClips[0]
       }
-    })()
+      addLog(`Regen: ${pollData.status || 'processing'}...`)
+    }
+    throw new Error('Clip regeneration timed out')
+  }
+
+  function enterReview(
+    mode: 'video' | 'flipbook',
+    assets: string[],
+    syncPayload: PendingSyncPayload,
+    ctx: ReviewContext
+  ) {
+    setPendingSync(syncPayload)
+    setReviewContext(ctx)
+    setFlaggedClips([])
+    setFlaggedFrames([])
+    if (mode === 'video') {
+      setReviewClips(assets)
+      setReviewFrames([])
+    } else {
+      setReviewFrames(assets)
+      setReviewClips([])
+    }
+    setStage(STAGES.REVIEWING)
+    addLog(mode === 'video'
+      ? 'Review your clips — flag bad ones and redo before Manus sync.'
+      : 'Review your frames — flag bad ones and redo before Manus sync.')
+  }
+
+  async function approveAndSync() {
+    if (!pendingSync) return
+    const flagged = pendingSync.mode === 'video' ? flaggedClips : flaggedFrames
+    if (flagged.length > 0) {
+      const ok = window.confirm(
+        `${flagged.length} item(s) still flagged as bad. Sync to Manus anyway?`
+      )
+      if (!ok) return
+    }
+    try {
+      if (pendingSync.mode === 'video') {
+        await syncToManus({ ...pendingSync, clips: reviewClips })
+      } else {
+        await syncToManus({ ...pendingSync, frames: reviewFrames })
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Sync failed')
+      setStage(STAGES.ERROR)
+    }
+  }
+
+  async function regenerateClip(index: number) {
+    if (!reviewContext || !pendingSync) return
+    setRegeneratingIndex(index)
+    setError(null)
+    try {
+      addLog(`Regenerating clip ${index + 1}...`)
+      const clipDuration = pendingSync.clipDurations[index] ?? 8
+      const res = await fetch('/api/generate-video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompts: [reviewContext.clipPrompts[index]],
+          imageUrl: reviewContext.styledImageUrl,
+          beat: pendingSync.audioData,
+          model: reviewContext.videoModel,
+          duration: clipDuration,
+          clipDurations: [clipDuration],
+        }),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      const url = await pollSingleClip(data.taskId1, data.provider ?? 'seedance', clipDuration)
+      setReviewClips(prev => {
+        const next = [...prev]
+        next[index] = url
+        return next
+      })
+      setFlaggedClips(prev => prev.filter(i => i !== index))
+      addLog(`Clip ${index + 1} regenerated.`)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Clip regen failed')
+    } finally {
+      setRegeneratingIndex(null)
+    }
+  }
+
+  async function regenerateFrame(index: number) {
+    if (!reviewContext || !prompts) return
+    setRegeneratingIndex(index)
+    setError(null)
+    try {
+      addLog(`Regenerating frame ${index + 1}...`)
+      const posePrompt = prompts[`flipbook${index + 1}`] || `Pose ${index + 1}`
+      const frameRes = await fetch('/api/style-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: reviewContext.styledImageUrl,
+          style: reviewContext.flipbookStyle,
+          posePrompt,
+        }),
+      })
+      const frameData = await frameRes.json()
+      if (frameData.error) throw new Error(frameData.error)
+      setReviewFrames(prev => {
+        const next = [...prev]
+        next[index] = frameData.imageUrl
+        return next
+      })
+      setFlaggedFrames(prev => prev.filter(i => i !== index))
+      addLog(`Frame ${index + 1} regenerated.`)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Frame regen failed')
+    } finally {
+      setRegeneratingIndex(null)
+    }
+  }
+
+  function toggleFlagClip(index: number) {
+    setFlaggedClips(prev => (
+      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+    ))
+  }
+
+  function toggleFlagFrame(index: number) {
+    setFlaggedFrames(prev => (
+      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+    ))
   }
 
   function shiftTrack(delta: number) {
@@ -353,6 +515,12 @@ export default function Home() {
     setVideoUrl(null)
     setStyledPreview(null)
     setError(null)
+    setReviewClips([])
+    setReviewFrames([])
+    setFlaggedClips([])
+    setFlaggedFrames([])
+    setPendingSync(null)
+    setReviewContext(null)
 
     try {
       addLog('Claude is reading your goal...')
@@ -512,6 +680,23 @@ export default function Home() {
         }
 
         addLog(`All ${poseCount} frames ready.`)
+        const syncPayload: PendingSyncPayload = {
+          mode: 'flipbook',
+          musicData,
+          audioData,
+          clipDurations,
+        }
+        const reviewCtx: ReviewContext = {
+          clipPrompts: [],
+          styledImageUrl,
+          videoModel: selectedModel,
+          videoProvider: 'seedance',
+          flipbookStyle: style,
+        }
+        if (reviewBeforeSync) {
+          enterReview('flipbook', completedFrames, syncPayload, reviewCtx)
+          return
+        }
         await syncToManus({
           mode: 'flipbook',
           frames: completedFrames,
@@ -586,6 +771,23 @@ export default function Home() {
         if (pollData.status === 'completed') {
           completedClips = pollData.completedClips
           addLog(`All ${clipCount} clips ready.`)
+          const syncPayload: PendingSyncPayload = {
+            mode: 'video',
+            musicData,
+            audioData,
+            clipDurations,
+          }
+          const reviewCtx: ReviewContext = {
+            clipPrompts,
+            styledImageUrl,
+            videoModel: selectedModel,
+            videoProvider,
+            flipbookStyle: promptData.style || 'sharp anime style',
+          }
+          if (reviewBeforeSync) {
+            enterReview('video', completedClips, syncPayload, reviewCtx)
+            return
+          }
           await syncToManus({
             mode: 'video',
             clips: completedClips,
@@ -723,6 +925,16 @@ export default function Home() {
             disabled={isRunning}
           />
         )}
+        <ToggleGroup
+          label="Review"
+          options={[
+            { id: 'on', label: 'Before sync' },
+            { id: 'off', label: 'Skip' },
+          ]}
+          value={reviewBeforeSync ? 'on' : 'off'}
+          onChange={v => setReviewBeforeSync(v === 'on')}
+          disabled={isRunning}
+        />
         <div style={{ paddingLeft: 72, fontSize: 10, color: '#2a2a2a', letterSpacing: '0.1em' }}>
           ~{estMinutes} MIN
         </div>
@@ -858,6 +1070,16 @@ export default function Home() {
                   }}
                   disabled={isRunning || tracksLoading}
                 />
+                <ToggleGroup
+                  label="VIEW"
+                  options={[
+                    { id: 'list', label: 'All' },
+                    { id: 'carousel', label: '1-by-1' },
+                  ]}
+                  value={trackViewMode}
+                  onChange={v => setTrackViewMode(v as 'list' | 'carousel')}
+                  disabled={isRunning || tracksLoading}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     type="button"
@@ -872,7 +1094,7 @@ export default function Home() {
                   >
                     {tracksLoading ? 'SEARCHING...' : 'PREVIEW TRACKS'}
                   </button>
-                  {trackCandidates.length > 0 && (
+                  {trackCandidates.length > 0 && trackViewMode === 'carousel' && (
                     <>
                       <button type="button" onClick={() => shiftTrack(-1)} disabled={isRunning} style={trackNavBtnStyle}>◀</button>
                       <span style={{ fontSize: 10, color: '#555', minWidth: 52, textAlign: 'center' }}>
@@ -890,7 +1112,46 @@ export default function Home() {
                     </>
                   )}
                 </div>
-                {selectedTrack && (
+                {trackCandidates.length > 0 && trackViewMode === 'list' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+                    {trackCandidates.map((track, i) => (
+                      <div
+                        key={`${track.source}:${track.title}:${i}`}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                          borderRadius: 3,
+                          border: `1px solid ${selectedTrackIndex === i ? '#ff3c3c44' : '#1a1a1a'}`,
+                          background: selectedTrackIndex === i ? '#ff3c3c0a' : 'transparent',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTrackIndex(i)}
+                          disabled={isRunning}
+                          style={{
+                            flex: 1, background: 'transparent', border: 'none', textAlign: 'left',
+                            cursor: 'pointer', fontFamily: 'inherit', padding: 0,
+                          }}
+                        >
+                          <div style={{ fontSize: 11, color: '#aaa' }}>{track.title || 'Untitled'}</div>
+                          <div style={{ fontSize: 9, color: '#444', marginTop: 2 }}>
+                            {track.creator ? `${track.creator} · ` : ''}{track.dropStyle === 'hook' ? 'HOOK' : 'BASS'}
+                            {track.recommended ? ' · ★' : ''}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => playTrackAtIndex(i)}
+                          disabled={isRunning}
+                          style={trackNavBtnStyle}
+                        >
+                          ▶
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {selectedTrack && trackViewMode === 'carousel' && (
                   <div style={{ fontSize: 11, color: '#666', lineHeight: 1.4 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ color: '#aaa' }}>{selectedTrack.title || 'Untitled track'}</span>
@@ -931,13 +1192,15 @@ export default function Home() {
                     PLAY DROP starts ~5s before the hit so you feel the build.
                   </p>
                 )}
-                <audio
-                  key={selectedTrack?.audioUrl || 'none'}
-                  ref={previewAudioRef}
-                  src={selectedTrack?.audioUrl || undefined}
-                  preload="auto"
-                  style={{ display: 'none' }}
-                />
+                {selectedTrack && trackViewMode === 'list' && (
+                  <div style={{ fontSize: 10, color: '#444' }}>
+                    Selected: {selectedTrack.title || 'Untitled'}
+                    {selectedTrack.dropSeconds != null && (
+                      <> · build ~{selectedTrack.previewStartSeconds ?? Math.max(0, selectedTrack.dropSeconds - 5)}s · drop ~{selectedTrack.dropSeconds}s</>
+                    )}
+                  </div>
+                )}
+                <audio ref={listAudioRef} preload="auto" style={{ display: 'none' }} />
               </div>
             </>
           )}
@@ -994,7 +1257,11 @@ export default function Home() {
               fontSize: 10, fontWeight: 700, letterSpacing: '0.2em',
               color: stage === STAGES.ERROR ? '#ff3c3c' : stage === STAGES.DONE ? '#3cff8f' : '#ff3c3c',
             }}>
-              {isFlipbook && stage === STAGES.GENERATING_VIDEO ? 'GENERATING FRAMES' : (STAGE_LABELS[stage] || stage.toUpperCase())}
+              {isFlipbook && stage === STAGES.GENERATING_VIDEO
+                ? 'GENERATING FRAMES'
+                : stage === STAGES.REVIEWING
+                  ? (pendingSync?.mode === 'flipbook' ? 'REVIEW FRAMES' : 'REVIEW CLIPS')
+                  : (STAGE_LABELS[stage] || stage.toUpperCase())}
             </span>
           </div>
 
@@ -1047,6 +1314,107 @@ export default function Home() {
         </div>
       )}
 
+      {isReviewing && pendingSync && (
+        <div style={{ width: '100%', maxWidth: 640, marginBottom: 24 }}>
+          <div style={{ fontSize: 10, letterSpacing: '0.2em', color: '#ff3c3c', fontWeight: 700, marginBottom: 12 }}>
+            {pendingSync.mode === 'video' ? 'REVIEW CLIPS BEFORE MANUS' : 'REVIEW FRAMES BEFORE MANUS'}
+          </div>
+          <p style={{ fontSize: 11, color: '#444', margin: '0 0 16px 0', lineHeight: 1.5 }}>
+            Flag anything that looks wrong, redo it, then sync. Saves Manus credits on bad outputs.
+          </p>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: pendingSync.mode === 'flipbook'
+              ? `repeat(${Math.min(reviewFrames.length, 3)}, 1fr)`
+              : '1fr',
+            gap: 10,
+            marginBottom: 16,
+          }}>
+            {pendingSync.mode === 'video' && reviewClips.map((url, i) => {
+              const label = i === 0 ? 'BUILD' : i === reviewClips.length - 1 ? 'DROP' : `CLIP ${i + 1}`
+              const flagged = flaggedClips.includes(i)
+              return (
+                <div key={url + i} style={{
+                  background: '#080810',
+                  border: `1px solid ${flagged ? '#ff3c3c55' : '#1a1a1a'}`,
+                  borderRadius: 4,
+                  padding: 10,
+                }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.15em', color: flagged ? '#ff3c3c' : '#666', fontWeight: 700, marginBottom: 8 }}>
+                    {label}{flagged ? ' · FLAGGED' : ''}
+                  </div>
+                  <video src={url} controls style={{ width: '100%', borderRadius: 3, background: '#000', marginBottom: 8 }} />
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleFlagClip(i)}
+                      disabled={regeneratingIndex != null}
+                      style={trackNavBtnStyle}
+                    >
+                      {flagged ? 'UNFLAG' : 'FLAG BAD'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => regenerateClip(i).catch(() => {})}
+                      disabled={regeneratingIndex != null}
+                      style={{ ...trackNavBtnStyle, color: '#ff3c3c', borderColor: '#ff3c3c33' }}
+                    >
+                      {regeneratingIndex === i ? 'REDO...' : 'REDO'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+            {pendingSync.mode === 'flipbook' && reviewFrames.map((url, i) => {
+              const flagged = flaggedFrames.includes(i)
+              return (
+                <div key={url + i} style={{
+                  background: '#080810',
+                  border: `1px solid ${flagged ? '#ff3c3c55' : '#1a1a1a'}`,
+                  borderRadius: 4,
+                  padding: 10,
+                }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.15em', color: flagged ? '#ff3c3c' : '#666', fontWeight: 700, marginBottom: 8 }}>
+                    FRAME {i + 1}{flagged ? ' · FLAGGED' : ''}
+                  </div>
+                  <img src={url} alt="" style={{ width: '100%', borderRadius: 3, marginBottom: 8, display: 'block' }} />
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleFlagFrame(i)}
+                      disabled={regeneratingIndex != null}
+                      style={trackNavBtnStyle}
+                    >
+                      {flagged ? 'UNFLAG' : 'FLAG BAD'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => regenerateFrame(i).catch(() => {})}
+                      disabled={regeneratingIndex != null}
+                      style={{ ...trackNavBtnStyle, color: '#ff3c3c', borderColor: '#ff3c3c33' }}
+                    >
+                      {regeneratingIndex === i ? 'REDO...' : 'REDO'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => approveAndSync().catch(() => {})}
+            disabled={regeneratingIndex != null}
+            style={{
+              background: '#ff3c3c', color: '#fff', border: 'none', borderRadius: 3,
+              padding: '10px 24px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em',
+              cursor: regeneratingIndex != null ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            APPROVE & SYNC TO MANUS
+          </button>
+        </div>
+      )}
+
       {stage === STAGES.DONE && videoUrl && (
         <div style={{ width: '100%', maxWidth: 640, marginBottom: 40 }}>
           <div style={{ background: '#080810', border: '1px solid #3cff8f22', borderRadius: 6, padding: 20, textAlign: 'center' }}>
@@ -1062,7 +1430,21 @@ export default function Home() {
                 padding: '9px 22px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3,
                 cursor: 'pointer', fontFamily: 'inherit',
               }}>COPY LINK</button>
-              <button onClick={() => { setStage(STAGES.IDLE); setGoal(''); setLog([]); setPrompts(null); setBeatData(null); setVideoUrl(null); setStyledPreview(null) }} style={{
+              <button onClick={() => {
+                setStage(STAGES.IDLE)
+                setGoal('')
+                setLog([])
+                setPrompts(null)
+                setBeatData(null)
+                setVideoUrl(null)
+                setStyledPreview(null)
+                setReviewClips([])
+                setReviewFrames([])
+                setFlaggedClips([])
+                setFlaggedFrames([])
+                setPendingSync(null)
+                setReviewContext(null)
+              }} style={{
                 background: 'transparent', color: '#333', border: '1px solid #1a1a1a',
                 padding: '9px 22px', fontSize: 11, fontWeight: 700, letterSpacing: '0.15em', borderRadius: 3,
                 cursor: 'pointer', fontFamily: 'inherit',
