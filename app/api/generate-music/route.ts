@@ -4,20 +4,29 @@ import { searchLibraryMusic } from '../../../lib/library-music'
 export async function POST(req: NextRequest) {
   try {
     const { mood } = await req.json()
-    const result = await searchLibraryMusic(mood || 'cinematic instrumental')
+    const siteOrigin = req.nextUrl.origin
+    const result = await searchLibraryMusic(mood || 'edm drop electronic', siteOrigin)
     return NextResponse.json({
       audioUrl: result.audioUrl,
       source: result.source,
       title: result.title,
       creator: result.creator,
       query: result.query,
+      fallbackReason: result.fallbackReason,
+      dropSeconds: result.dropSeconds,
     })
-  } catch (err: any) {
-    const fallback = await searchLibraryMusic('cinematic instrumental')
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Library search failed'
+    const siteOrigin = req.nextUrl.origin
+    const fallback = await searchLibraryMusic('edm drop electronic', siteOrigin)
     return NextResponse.json({
       audioUrl: fallback.audioUrl,
       source: 'fallback',
-      error: err.message,
+      title: fallback.title,
+      creator: fallback.creator,
+      fallbackReason: fallback.fallbackReason || 'error',
+      dropSeconds: fallback.dropSeconds,
+      error: message,
     })
   }
 }

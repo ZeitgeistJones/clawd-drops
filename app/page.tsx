@@ -255,6 +255,7 @@ export default function Home() {
       addLog(imageUrl ? 'Character image ready.' : 'Using default Clawd reference.')
 
       let musicData: { audioUrl: string; title?: string } = { audioUrl: '' }
+      let curatedDropSeconds: number | undefined
 
       if (musicMode === 'ai') {
         setStage(STAGES.GENERATING_MUSIC)
@@ -269,10 +270,13 @@ export default function Home() {
           throw new Error(musicResult.error || 'Music generation failed')
         }
         musicData = { audioUrl: musicResult.audioUrl, title: musicResult.title }
+        curatedDropSeconds = musicResult.dropSeconds
         addLog(
           musicResult.provider === 'musicapi'
             ? `Generated: ${musicResult.title || 'AI track'}`
-            : 'Using library fallback track.'
+            : musicResult.source === 'fallback'
+              ? `Using curated drop: ${musicResult.title || 'CC0 track'} (${musicResult.fallbackReason || 'library fallback'})`
+              : 'Using library fallback track.'
         )
       } else if (musicMode === 'find-song') {
         setStage(STAGES.GENERATING_MUSIC)
@@ -285,7 +289,14 @@ export default function Home() {
         const musicResult = await musicRes.json()
         if (!musicResult.audioUrl) throw new Error(musicResult.error || 'Library search failed')
         musicData = { audioUrl: musicResult.audioUrl, title: musicResult.title }
-        addLog(`Found: ${musicResult.title || 'CC0 track'} (${musicResult.source})`)
+        curatedDropSeconds = musicResult.dropSeconds
+        if (musicResult.source === 'fallback') {
+          addLog(
+            `Using curated drop: ${musicResult.title || 'CC0 track'} (${musicResult.fallbackReason || 'library search empty'})`
+          )
+        } else {
+          addLog(`Found: ${musicResult.title || 'CC0 track'} (${musicResult.source})`)
+        }
       } else {
         if (!audioUrl) throw new Error('Upload an audio file for My Song mode')
         musicData = { audioUrl }
@@ -316,6 +327,17 @@ export default function Home() {
           body: JSON.stringify({ audioUrl: musicData.audioUrl, duration: analysisDuration }),
         })
         audioData = (await analyzeRes.json()) as BeatAnalysisResult
+      }
+
+      if (curatedDropSeconds != null) {
+        audioData = {
+          ...audioData,
+          dropSeconds: curatedDropSeconds,
+          drop: curatedDropSeconds,
+          peakSeconds: curatedDropSeconds + 0.3,
+          peak: curatedDropSeconds + 0.3,
+          dropConfidence: 'high',
+        }
       }
 
       setBeatData(audioData)

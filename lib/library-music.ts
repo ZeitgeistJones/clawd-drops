@@ -1,4 +1,4 @@
-const SOUNDHELIX_URL = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
+import { resolveCuratedFallback } from './fallback-tracks'
 
 const FREESOUND_MUSIC_TAG = 'music'
 const FREESOUND_EXCLUDE_TERMS = [
@@ -44,6 +44,8 @@ export type LibraryMusicResult = {
   title?: string
   creator?: string
   query?: string
+  fallbackReason?: string
+  dropSeconds?: number
 }
 
 type FreesoundTrack = {
@@ -53,12 +55,24 @@ type FreesoundTrack = {
   previews?: Record<string, string>
 }
 
-function applyFreesoundMusicConstraints(query: string, dropIntent: boolean): string {
+type FreesoundSearchOpts = {
+  dropIntent: boolean
+  useBpmFilter: boolean
+  requireMusicTag: boolean
+  strictScoring: boolean
+  applySoftQueryExclusions: boolean
+}
+
+function applyFreesoundMusicConstraints(
+  query: string,
+  dropIntent: boolean,
+  applySoftQueryExclusions: boolean
+): string {
   const exclusions = FREESOUND_EXCLUDE_TERMS.map(t => `-${t}`).join(' ')
-  const softExclusions = dropIntent
+  const softExclusions = dropIntent && applySoftQueryExclusions
     ? SOFT_MUSIC_TERMS.slice(0, 12).map(t => `-${t.replace(/\s+/g, '-')}`).join(' ')
     : ''
-  return `${query.trim()} tag:${FREESOUND_MUSIC_TAG} ${exclusions} ${softExclusions}`.trim()
+  return `${query.trim()} ${exclusions} ${softExclusions}`.trim()
 }
 
 function textContainsTerm(text: string, terms: readonly string[]): boolean {
@@ -95,7 +109,7 @@ function scoreFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): number
 
 function hasDropIntent(mood: string, tokens: string[]): boolean {
   const normalized = mood.toLowerCase()
-  return tokens.some(t => DROP_INTENT_TERMS.includes(t as typeof DROP_INTENT_TERMS[number]))
+  return tokens.some(t => (DROP_INTENT_TERMS as readonly string[]).includes(t))
     || normalized.includes('build drop')
     || normalized.includes('bass drop')
 }
@@ -138,6 +152,7 @@ function buildFreesoundQueries(tokens: string[], dropIntent: boolean): string[] 
       `${moodPart} edm bass drop build`.trim(),
       'electronic dance drop build bass loop',
       'edm festival drop beat instrumental',
+      'edm drop loop',
     ]
   }
 
@@ -154,7 +169,11 @@ function buildJamendoTags(tokens: string[], dropIntent: boolean): string[] {
   return tokens.filter(t => t !== 'music').slice(0, 3)
 }
 
-function pickBestFreesoundTrack(results: FreesoundTrack[], dropIntent: boolean) {
+function pickBestFreesoundTrack(
+  results: FreesoundTrack[],
+  dropIntent: boolean,
+  strictScoring: boolean
+) {
   let best: { track: FreesoundTrack; score: number } | null = null
 
   for (const track of results) {
@@ -164,7 +183,7 @@ function pickBestFreesoundTrack(results: FreesoundTrack[], dropIntent: boolean) 
     const audioUrl = track.previews?.['preview-hq-mp3'] || track.previews?.['preview-lq-mp3']
     if (!audioUrl) continue
 
-    if (dropIntent && score === 0) continue
+    if (dropIntent && strictScoring && score === 0) continue
 
     if (!best || score > best.score) {
       best = { track, score }
@@ -179,19 +198,29 @@ function pickBestFreesoundTrack(results: FreesoundTrack[], dropIntent: boolean) 
   return { audioUrl, title: best.track.name, creator: best.track.username }
 }
 
-async function fetchFreesoundResults(query: string, dropIntent: boolean, useBpmFilter: boolean) {
+async function fetchFreesoundResults(query: string, opts: FreesoundSearchOpts) {
+  if (!process.env.FREESOUND_API_KEY?.trim()) return null
+
   const fields = ['id', 'name', 'username', 'license', 'duration', 'previews', 'tags'].join(',')
   const filterParts = [
     'license:("Creative Commons 0")',
     'duration:[15 TO 240]',
-    `tag:${FREESOUND_MUSIC_TAG}`,
   ]
-  if (dropIntent && useBpmFilter) {
+  if (opts.requireMusicTag) {
+    filterParts.push(`tag:${FREESOUND_MUSIC_TAG}`)
+  }
+  if (opts.dropIntent && opts.useBpmFilter) {
     filterParts.push('bpm:[110 TO 150]')
   }
 
+  const constrainedQuery = applyFreesoundMusicConstraints(
+    opts.requireMusicTag ? `${query} tag:${FREESOUND_MUSIC_TAG}` : query,
+    opts.dropIntent,
+    opts.applySoftQueryExclusions
+  )
+
   const url = new URL('https://freesound.org/apiv2/search/text/')
-  url.searchParams.set('query', applyFreesoundMusicConstraints(query, dropIntent))
+  url.searchParams.set('query', constrainedQuery)
   url.searchParams.set('filter', filterParts.join(' '))
   url.searchParams.set('fields', fields)
   url.searchParams.set('page_size', '20')
@@ -206,13 +235,20 @@ async function fetchFreesoundResults(query: string, dropIntent: boolean, useBpmF
   return data.results || []
 }
 
-async function searchFreesound(query: string, dropIntent: boolean) {
-  for (const useBpmFilter of dropIntent ? [true, false] : [false]) {
-    const results = await fetchFreesoundResults(query, dropIntent, useBpmFilter)
-    if (results.length === 0) continue
+async function searchFreesound(query: string, opts: FreesoundSearchOpts) {
+  if (!process.env.FREESOUND_API_KEY?.trim()) return null
 
-    const picked = pickBestFreesoundTrack(results, dropIntent)
-    if (picked) return picked
+  const bpmPasses = opts.dropIntent ? [true, false] : [false]
+  for (const useBpmFilter of bpmPasses) {
+    try {
+      const results = await fetchFreesoundResults(query, { ...opts, useBpmFilter })
+      if (!results?.length) continue
+
+      const picked = pickBestFreesoundTrack(results, opts.dropIntent, opts.strictScoring)
+      if (picked) return picked
+    } catch {
+      // try next pass
+    }
   }
 
   return null
@@ -237,9 +273,9 @@ function scoreJamendoTrack(track: { name?: string; tags?: string }, dropIntent: 
   return score
 }
 
-async function searchJamendo(tokens: string[], dropIntent: boolean) {
+async function searchJamendo(tokens: string[], dropIntent: boolean, strictScoring: boolean) {
   const clientId = process.env.JAMENDO_CLIENT_ID
-  if (!clientId) return null
+  if (!clientId) return { result: null, reason: 'jamendo_not_configured' as const }
 
   const jamendoTags = buildJamendoTags(tokens, dropIntent)
   const url = new URL('https://api.jamendo.com/v3.0/tracks/')
@@ -251,17 +287,17 @@ async function searchJamendo(tokens: string[], dropIntent: boolean) {
   url.searchParams.set('order', 'relevance_desc')
 
   const res = await fetch(url.toString())
-  if (!res.ok) return null
+  if (!res.ok) return { result: null, reason: 'jamendo_error' as const }
 
   const data = await res.json()
   const results = data.results || []
-  if (results.length === 0) return null
+  if (results.length === 0) return { result: null, reason: 'jamendo_empty' as const }
 
   let best: { track: typeof results[0]; score: number } | null = null
   for (const track of results) {
     const score = scoreJamendoTrack(track, dropIntent)
     if (score < 0) continue
-    if (dropIntent && score === 0) continue
+    if (dropIntent && strictScoring && score === 0) continue
 
     const audioUrl = track.audio || track.audiodownload
     if (!audioUrl) continue
@@ -271,64 +307,136 @@ async function searchJamendo(tokens: string[], dropIntent: boolean) {
     }
   }
 
-  if (!best) return null
+  if (!best) return { result: null, reason: 'jamendo_no_match' as const }
 
   return {
-    audioUrl: best.track.audio || best.track.audiodownload,
-    title: best.track.name,
-    creator: best.track.artist_name,
+    result: {
+      audioUrl: best.track.audio || best.track.audiodownload,
+      title: best.track.name,
+      creator: best.track.artist_name,
+    },
+    reason: undefined,
   }
 }
 
-export async function searchLibraryMusic(mood: string): Promise<LibraryMusicResult> {
+async function useCuratedFallback(
+  mood: string,
+  dropIntent: boolean,
+  siteOrigin?: string,
+  reason = 'search_empty'
+): Promise<LibraryMusicResult> {
+  const curated = await resolveCuratedFallback(mood, dropIntent, siteOrigin)
+  return {
+    audioUrl: curated.audioUrl,
+    source: 'fallback',
+    title: curated.title,
+    creator: curated.creator,
+    dropSeconds: curated.dropSeconds,
+    fallbackReason: curated.fallbackReason,
+  }
+}
+
+const STRICT_FS: Omit<FreesoundSearchOpts, 'query'> = {
+  dropIntent: true,
+  useBpmFilter: true,
+  requireMusicTag: true,
+  strictScoring: true,
+  applySoftQueryExclusions: true,
+}
+
+const RELAXED_FS: Omit<FreesoundSearchOpts, 'query'> = {
+  dropIntent: true,
+  useBpmFilter: false,
+  requireMusicTag: true,
+  strictScoring: false,
+  applySoftQueryExclusions: true,
+}
+
+const BROAD_FS: Omit<FreesoundSearchOpts, 'query'> = {
+  dropIntent: true,
+  useBpmFilter: false,
+  requireMusicTag: false,
+  strictScoring: false,
+  applySoftQueryExclusions: false,
+}
+
+export async function searchLibraryMusic(
+  mood: string,
+  siteOrigin?: string
+): Promise<LibraryMusicResult> {
   const tokens = extractMoodTokens(mood || 'edm drop electronic')
   const dropIntent = hasDropIntent(mood, tokens)
   const queries = buildFreesoundQueries(tokens, dropIntent)
 
+  let lastJamendoReason: string | undefined
+
   if (dropIntent) {
-    const jamendoResult = await searchJamendo(tokens, true)
-    if (jamendoResult) {
-      return { ...jamendoResult, source: 'jamendo' }
+    const jamendoStrict = await searchJamendo(tokens, true, true)
+    lastJamendoReason = jamendoStrict.reason
+    if (jamendoStrict.result) {
+      return { ...jamendoStrict.result, source: 'jamendo' }
+    }
+
+    for (const query of queries.slice(0, 3)) {
+      const result = await searchFreesound(query, { ...STRICT_FS, dropIntent: true })
+      if (result) return { ...result, source: 'freesound', query }
+    }
+
+    const jamendoRelaxed = await searchJamendo(tokens, true, false)
+    lastJamendoReason = jamendoRelaxed.reason
+    if (jamendoRelaxed.result) {
+      return { ...jamendoRelaxed.result, source: 'jamendo' }
     }
 
     for (const query of queries) {
-      try {
-        const result = await searchFreesound(query, true)
-        if (result) {
-          return { ...result, source: 'freesound', query }
-        }
-      } catch {
-        // try next query
-      }
+      const result = await searchFreesound(query, { ...RELAXED_FS, dropIntent: true })
+      if (result) return { ...result, source: 'freesound', query }
     }
 
-    return { audioUrl: SOUNDHELIX_URL, source: 'fallback' }
+    const broadResult = await searchFreesound('edm drop loop bass', { ...BROAD_FS, dropIntent: true })
+    if (broadResult) return { ...broadResult, source: 'freesound', query: 'edm drop loop bass' }
+
+    return useCuratedFallback(
+      mood,
+      true,
+      siteOrigin,
+      lastJamendoReason || 'search_empty'
+    )
   }
 
   try {
-    const strictResult = await searchFreesound(queries[0], false)
+    const strictResult = await searchFreesound(queries[0], {
+      dropIntent: false,
+      useBpmFilter: false,
+      requireMusicTag: true,
+      strictScoring: false,
+      applySoftQueryExclusions: false,
+    })
     if (strictResult) {
       return { ...strictResult, source: 'freesound', query: queries[0] }
     }
   } catch {
-    // try jamendo / broad freesound
+    // continue
   }
 
-  const jamendoResult = await searchJamendo(tokens, false)
-  if (jamendoResult) {
-    return { ...jamendoResult, source: 'jamendo' }
+  const jamendoResult = await searchJamendo(tokens, false, false)
+  lastJamendoReason = jamendoResult.reason
+  if (jamendoResult.result) {
+    return { ...jamendoResult.result, source: 'jamendo' }
   }
 
   if (queries[1]) {
-    try {
-      const broadResult = await searchFreesound(queries[1], false)
-      if (broadResult) {
-        return { ...broadResult, source: 'freesound', query: queries[1] }
-      }
-    } catch {
-      // fall through to SoundHelix
+    const broadResult = await searchFreesound(queries[1], {
+      dropIntent: false,
+      useBpmFilter: false,
+      requireMusicTag: true,
+      strictScoring: false,
+      applySoftQueryExclusions: false,
+    })
+    if (broadResult) {
+      return { ...broadResult, source: 'freesound', query: queries[1] }
     }
   }
 
-  return { audioUrl: SOUNDHELIX_URL, source: 'fallback' }
+  return useCuratedFallback(mood, false, siteOrigin, lastJamendoReason || 'search_empty')
 }

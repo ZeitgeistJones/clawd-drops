@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
       title: music.title,
     })
   } catch {
-    const library = await searchLibraryMusic(mood)
+    const library = await searchLibraryMusic(mood, req.nextUrl.origin)
     return NextResponse.json({
       success: true,
       provider: library.source,
@@ -122,6 +122,8 @@ export async function POST(req: NextRequest) {
       durationSeconds,
       title: library.title,
       creator: library.creator,
+      fallbackReason: library.fallbackReason,
+      dropSeconds: library.dropSeconds,
     })
   }
 }
