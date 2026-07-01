@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
       clipDurations: rawClipDurations,
       outputMode = 'video',
       poseCount = 5,
+      supportingCharacterCount = 0,
     } = await req.json()
 
     const isFlipbook = outputMode === 'flipbook'
@@ -84,13 +85,18 @@ export async function POST(req: NextRequest) {
       ? `\nIf the goal uses BUILD / DROP / CLIP N / STYLE sections, honor them literally — do not merge build and drop into one prompt.\n`
       : ''
 
+    const supportCount = Math.min(2, Math.max(0, Number(supportingCharacterCount) || 0))
+    const castBlock = supportCount > 0
+      ? `\nSupporting cast references are uploaded. @Image1 is the main character (Clawd). ${supportCount >= 1 ? '@Image2 is supporting character A — reference their exact face, hair, and outfit in every clip prompt.' : ''}${supportCount >= 2 ? ' @Image3 is supporting character B — same rule.' : ''} Name them explicitly in each scene prompt (e.g. "the woman from @Image2").\n`
+      : ''
+
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1500,
       messages: [{
         role: 'user',
         content: `You are a creative director for AI video generation. The character in the reference image (@Image1) is Clawd — a red pyramid-headed figure with smug half-lidded eyes and a neat black bowtie. Clawd is the mascot of the CLAWD token on Base blockchain. He is confident, mysterious, and always unbothered. His red pyramid head, smug eyes, and black bowtie never change — only his outfit, setting, and art style vary.
-
+${castBlock}
 Goal: "${goal}"
 ${durationBlock}${structuredHint}
 ${modeInstructions}

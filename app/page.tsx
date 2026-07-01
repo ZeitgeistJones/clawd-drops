@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react'
 import type { BeatAnalysisResult } from '../lib/beat-analysis'
 import { clipRoleLabel } from '../lib/clip-prompts'
+import { filterSupportingUrls, type CastMode } from '../lib/cast-references'
 import {
   effectiveDuration,
   isBackupVideoProvider,
@@ -69,6 +70,10 @@ type PendingSyncPayload = {
 type ReviewContext = {
   clipPrompts: string[]
   styledImageUrl: string
+  videoImageUrl: string
+  keyframeUrl: string | null
+  referenceImageUrls: string[]
+  castMode: CastMode
   videoModel: string
   videoProvider: string
   flipbookStyle: string
@@ -199,6 +204,14 @@ export default function Home() {
   const [pendingSync, setPendingSync] = useState<PendingSyncPayload | null>(null)
   const [reviewContext, setReviewContext] = useState<ReviewContext | null>(null)
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null)
+  const [castMode, setCastMode] = useState<CastMode>('none')
+  const [supportChar1Url, setSupportChar1Url] = useState('')
+  const [supportChar2Url, setSupportChar2Url] = useState('')
+  const [supportChar1Preview, setSupportChar1Preview] = useState<string | null>(null)
+  const [supportChar2Preview, setSupportChar2Preview] = useState<string | null>(null)
+  const [keyframePreview, setKeyframePreview] = useState<string | null>(null)
+  const supportChar1InputRef = useRef<HTMLInputElement>(null)
+  const supportChar2InputRef = useRef<HTMLInputElement>(null)
   const listAudioRef = useRef<HTMLAudioElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
 
@@ -227,6 +240,11 @@ export default function Home() {
     setReviewContext(null)
     setVideoUrl(null)
     setStyledPreview(null)
+    setKeyframePreview(null)
+  }
+
+  function activeSupportUrls(): string[] {
+    return filterSupportingUrls([supportChar1Url, supportChar2Url])
   }
 
   function updateReviewClipDuration(index: number, actualDuration: number) {
@@ -356,11 +374,14 @@ export default function Home() {
       const clipDuration = pendingSync.clipDurations[index] ?? 8
       const priorFrame = index > 0 ? reviewContext.clipLastFrames[index - 1] : null
       const referenceImageUrl = index === 0
-        ? reviewContext.styledImageUrl
-        : priorFrame ?? reviewContext.styledImageUrl
+        ? reviewContext.videoImageUrl
+        : priorFrame ?? reviewContext.videoImageUrl
+      const referenceImageUrls = reviewContext.castMode === 'refs'
+        ? reviewContext.referenceImageUrls
+        : []
 
       if (index > 0 && !priorFrame) {
-        addLog('No last-frame from kept clip — using styled character (continuity may vary).')
+        addLog('No last-frame from kept clip — using scene reference (continuity may vary).')
       }
 
       const res = await fetch('/api/regenerate-clip', {
@@ -370,6 +391,7 @@ export default function Home() {
           clipIndex: index,
           prompt: reviewContext.clipPrompts[index],
           referenceImageUrl,
+          referenceImageUrls,
           model: reviewContext.videoModel,
           duration: clipDuration,
           totalClips: reviewContext.totalClips,
@@ -460,6 +482,19 @@ export default function Home() {
       const next = (i + delta + trackCandidates.length) % trackCandidates.length
       return next
     })
+  }
+
+  async function handleSupportImageFile(file: File, slot: 1 | 2) {
+    const preview = URL.createObjectURL(file)
+    if (slot === 1) setSupportChar1Preview(preview)
+    else setSupportChar2Preview(preview)
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch('/api/upload-image', { method: 'POST', body: formData })
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+    if (slot === 1) setSupportChar1Url(data.url)
+    else setSupportChar2Url(data.url)
   }
 
   async function handleImageFile(file: File) {
@@ -572,6 +607,7 @@ export default function Home() {
 
     try {
       addLog('Claude is reading your goal...')
+      const supportUrlsForPrompts = castMode === 'refs' ? activeSupportUrls() : []
       const promptRes = await fetch('/api/generate-prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -582,6 +618,7 @@ export default function Home() {
           clipDurations,
           outputMode: isFlipbook ? 'flipbook' : 'video',
           poseCount,
+          supportingCharacterCount: supportUrlsForPrompts.length,
         }),
       })
       const promptData = await promptRes.json()
@@ -703,6 +740,48 @@ export default function Home() {
       if (!styleData.error) setStyledPreview(styledImageUrl)
       addLog(styleData.error ? 'Style step skipped — using original.' : 'Character styled.')
 
+      let videoImageUrl = styledImageUrl
+      let referenceImageUrls: string[] = []
+      let keyframeUrl: string | null = null
+
+      if (!isFlipbook && castMode === 'refs') {
+        referenceImageUrls = activeSupportUrls()
+        if (referenceImageUrls.length > 0) {
+          addLog(
+            `Cast refs locked — @Image2${referenceImageUrls.length > 1 ? ', @Image3' : ''} (Seedance reference-to-video).`
+          )
+        } else {
+          addLog('Cast refs mode on but no support images — using main character only.')
+        }
+      }
+
+      if (!isFlipbook && castMode === 'keyframe') {
+        addLog('Generating trio keyframe still...')
+        const sceneDescription = goal.trim()
+          || promptData[`seedance${1}`]
+          || 'Cinematic scene with main character and supporting cast'
+        const keyframeRes = await fetch('/api/generate-keyframe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            styledImageUrl,
+            supportingImageUrls: activeSupportUrls(),
+            sceneDescription,
+            style: promptData.style || 'ultra-cinematic realism, luxury fashion editorial',
+          }),
+        })
+        const keyframeData = await keyframeRes.json()
+        if (keyframeData.error) throw new Error(keyframeData.error)
+        videoImageUrl = keyframeData.imageUrl
+        keyframeUrl = keyframeData.imageUrl
+        setKeyframePreview(keyframeData.imageUrl)
+        addLog(
+          keyframeData.supportDescriptions?.length
+            ? `Keyframe ready (${keyframeData.supportDescriptions.length} support look(s) baked in).`
+            : 'Keyframe ready — animating from combined still.'
+        )
+      }
+
       if (isFlipbook) {
         setStage(STAGES.GENERATING_VIDEO)
         addLog(`Generating ${poseCount} flipbook frames...`)
@@ -736,6 +815,10 @@ export default function Home() {
         const reviewCtx: ReviewContext = {
           clipPrompts: [],
           styledImageUrl,
+          videoImageUrl: styledImageUrl,
+          keyframeUrl: null,
+          referenceImageUrls: [],
+          castMode: 'none',
           videoModel: selectedModel,
           videoProvider: 'seedance',
           flipbookStyle: style,
@@ -768,7 +851,8 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompts: clipPrompts,
-          imageUrl: styledImageUrl,
+          imageUrl: videoImageUrl,
+          referenceImageUrls: castMode === 'refs' ? referenceImageUrls : [],
           beat: audioData,
           model: selectedModel,
           duration: clipDurations[0],
@@ -791,6 +875,9 @@ export default function Home() {
       const clipProvidersList: string[] = []
 
       addLog(`Clip 1 started (${providerLabel(videoProvider)}, ${clipDurations[0]}s requested).`)
+      if (castMode === 'refs' && referenceImageUrls.length > 0 && videoProvider !== 'seedance') {
+        addLog('Note: @Image2/@Image3 refs only apply on Seedance — backup used main image only.')
+      }
 
       for (let i = 0; i < 80; i++) {
         await new Promise(r => setTimeout(r, 10000))
@@ -802,7 +889,8 @@ export default function Home() {
             completedClips,
             nextClipIndex,
             prompts: clipPrompts,
-            imageUrl: styledImageUrl,
+            imageUrl: videoImageUrl,
+            referenceImageUrls: castMode === 'refs' ? referenceImageUrls : [],
             beat: audioData,
             model: selectedModel,
             duration: clipDurations[nextClipIndex - 1] ?? clipDurations[0],
@@ -849,6 +937,10 @@ export default function Home() {
           const reviewCtx: ReviewContext = {
             clipPrompts,
             styledImageUrl,
+            videoImageUrl,
+            keyframeUrl,
+            referenceImageUrls,
+            castMode,
             videoModel: selectedModel,
             videoProvider,
             flipbookStyle: promptData.style || 'sharp anime style',
@@ -1084,6 +1176,87 @@ export default function Home() {
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }}
               onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f).catch(err => setError(err.message)) }} />
           </div>
+
+          {!isFlipbook && (
+            <>
+              <div style={{ height: 1, background: '#111' }} />
+              <div style={{ padding: '10px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <ToggleGroup
+                  label="Cast"
+                  options={[
+                    { id: 'none', label: 'Main only' },
+                    { id: 'refs', label: 'Refs' },
+                    { id: 'keyframe', label: 'Keyframe' },
+                  ]}
+                  value={castMode}
+                  onChange={v => {
+                    setCastMode(v as CastMode)
+                    setKeyframePreview(null)
+                  }}
+                  disabled={isRunning}
+                />
+                <p style={{ margin: 0, fontSize: 10, color: '#333', lineHeight: 1.5, paddingLeft: 72 }}>
+                  {castMode === 'none' && 'Video from styled main character only (@Image1).'}
+                  {castMode === 'refs' && 'Upload support faces — Seedance uses @Image2/@Image3 for cast consistency across clips.'}
+                  {castMode === 'keyframe' && 'Generates one trio still first, then animates it — best for multi-character scenes on any provider.'}
+                </p>
+                {castMode !== 'none' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 72 }}>
+                    {([1, 2] as const).map(slot => {
+                      const url = slot === 1 ? supportChar1Url : supportChar2Url
+                      const preview = slot === 1 ? supportChar1Preview : supportChar2Preview
+                      const setUrl = slot === 1 ? setSupportChar1Url : setSupportChar2Url
+                      const setPreview = slot === 1 ? setSupportChar1Preview : setSupportChar2Preview
+                      const inputRef = slot === 1 ? supportChar1InputRef : supportChar2InputRef
+                      return (
+                        <div key={slot} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          {preview ? (
+                            <img src={preview} alt="" style={{ width: 28, height: 28, borderRadius: 3, objectFit: 'cover', flexShrink: 0 }} />
+                          ) : (
+                            <div
+                              style={{
+                                width: 28, height: 28, borderRadius: 3, border: '1px dashed #222',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 9, color: '#333', cursor: 'pointer', flexShrink: 0,
+                              }}
+                              onClick={() => inputRef.current?.click()}
+                            >{slot === 1 ? 'A' : 'B'}</div>
+                          )}
+                          <input
+                            type="text"
+                            value={url}
+                            onChange={e => { setUrl(e.target.value); setPreview(null) }}
+                            placeholder={`support character ${slot} — paste URL or upload (@Image${slot + 1})`}
+                            disabled={isRunning}
+                            style={{
+                              flex: 1, background: 'transparent', border: 'none', outline: 'none',
+                              color: '#444', fontSize: 11, fontFamily: 'inherit',
+                            }}
+                          />
+                          <input
+                            ref={inputRef}
+                            type="file"
+                            accept="image/*"
+                            style={{ display: 'none' }}
+                            onChange={e => {
+                              const f = e.target.files?.[0]
+                              if (f) handleSupportImageFile(f, slot).catch(err => setError(err.message))
+                            }}
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                {keyframePreview && (
+                  <div style={{ paddingLeft: 72 }}>
+                    <div style={{ fontSize: 9, letterSpacing: '0.12em', color: '#555', marginBottom: 4 }}>KEYFRAME PREVIEW</div>
+                    <img src={keyframePreview} alt="" style={{ width: '100%', maxWidth: 280, borderRadius: 4, border: '1px solid #1a1a1a' }} />
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           {musicMode === 'my-song' && (
             <>

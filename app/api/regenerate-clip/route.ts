@@ -8,12 +8,15 @@ import {
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
+import { filterSupportingUrls } from '../../../lib/cast-references'
+
 export async function POST(req: NextRequest) {
   try {
     const {
       clipIndex = 0,
       prompt,
       referenceImageUrl,
+      referenceImageUrls,
       model = 'seedance-2-0-fast',
       duration = 8,
       totalClips = 1,
@@ -31,17 +34,25 @@ export async function POST(req: NextRequest) {
     const total = Math.max(1, Number(totalClips) || 1)
     const clipDuration = Number(duration) || 8
 
+    const supportRefs = filterSupportingUrls(
+      Array.isArray(referenceImageUrls) ? referenceImageUrls : []
+    )
+
     const wrappedPrompt = wrapVideoClipPrompt(
       prompt,
       idx,
       total,
       clipDuration,
-      { continuesFromPriorFrame: idx > 0 && continuesFromPriorFrame }
+      {
+        continuesFromPriorFrame: idx > 0 && continuesFromPriorFrame,
+        supportingRefCount: supportRefs.length,
+      }
     )
 
     const submitResult = await submitVideoClipWithFallback({
       prompt: wrappedPrompt,
       imageUrl: referenceImageUrl,
+      referenceImageUrls: supportRefs.length > 0 ? supportRefs : undefined,
       model: model === 'flipbook' ? 'seedance-2-0-fast' : model,
       duration: clipDuration,
       returnLastFrame: idx < total - 1,

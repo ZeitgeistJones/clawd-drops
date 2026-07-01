@@ -1,3 +1,5 @@
+import { castReferencePromptSuffix } from './cast-references'
+
 export type ParsedStructuredGoal = {
   style?: string
   clips: string[]
@@ -121,7 +123,7 @@ export function buildStructuredClipPrompts(
 
     const role = clipRoleLabel(i, clipCount)
     result[`seedance${i + 1}`] =
-      `${body} (${duration}s ${role.toLowerCase()} — @Image1 is Clawd, same character throughout)`
+      `${body} (${duration}s ${role.toLowerCase()} — @Image1 is the main character, same identity throughout)`
   }
 
   return result
@@ -151,7 +153,7 @@ export function wrapVideoClipPrompt(
   clipIndex: number,
   totalClips: number,
   durationSeconds: number,
-  options?: { continuesFromPriorFrame?: boolean }
+  options?: { continuesFromPriorFrame?: boolean; supportingRefCount?: number }
 ): string {
   const trimmed = prompt.trim()
   const hasImageRef = trimmed.includes('@Image1')
@@ -159,14 +161,17 @@ export function wrapVideoClipPrompt(
     ? trimmed
     : `${trimmed} @Image1 is the character reference.`
 
+  const castSuffix = castReferencePromptSuffix(options?.supportingRefCount ?? 0)
+  const withCast = castSuffix && !trimmed.includes('@Image2') ? `${base}${castSuffix}` : base
+
   const timing = clipDurationNote(clipIndex, totalClips, durationSeconds)
 
   if (totalClips === 1) {
-    return `${base} ${timing}`
+    return `${withCast} ${timing}`
   }
 
   if (clipIndex === 0) {
-    return `${base} ${timing}`
+    return `${withCast} ${timing}`
   }
 
   const continuity = options?.continuesFromPriorFrame !== false
@@ -174,10 +179,10 @@ export function wrapVideoClipPrompt(
     : ''
 
   if (clipIndex === totalClips - 1) {
-    return `${base} ${timing}${continuity}`
+    return `${withCast} ${timing}${continuity}`
   }
 
-  return `${base} ${timing}${continuity}`
+  return `${withCast} ${timing}${continuity}`
 }
 
 export function clipRoleLabel(clipIndex: number, totalClips: number): string {

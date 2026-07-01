@@ -46,9 +46,12 @@ const PROVIDER_ENV_KEYS: Record<VideoProvider, string> = {
   replicate: 'REPLICATE_API_KEY',
 }
 
+import { buildSeedanceImageUrls } from './cast-references'
+
 type ClipOpts = {
   prompt: string
   imageUrl: string
+  referenceImageUrls?: string[]
   model: string
   duration: number
   returnLastFrame: boolean
@@ -165,6 +168,11 @@ export async function submitSeedanceClip(opts: ClipOpts): Promise<SubmitResult> 
   const apiKey = getProviderApiKey('seedance')
   if (!apiKey) return { error: 'SEEDANCE_API_KEY not configured' }
 
+  const { imageUrls, useReferenceMode } = buildSeedanceImageUrls(
+    opts.imageUrl,
+    opts.referenceImageUrls
+  )
+
   const res = await fetch(SEEDANCE_GENERATIONS_URL, {
     method: 'POST',
     headers: {
@@ -175,8 +183,8 @@ export async function submitSeedanceClip(opts: ClipOpts): Promise<SubmitResult> 
       model: opts.model,
       input: {
         prompt: opts.prompt,
-        generation_type: 'image-to-video',
-        image_urls: [opts.imageUrl],
+        generation_type: useReferenceMode ? 'reference-to-video' : 'image-to-video',
+        image_urls: imageUrls,
         duration: opts.duration,
         resolution: '480p',
         watermark: false,

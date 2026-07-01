@@ -7,6 +7,8 @@ import {
   type VideoProvider,
 } from '../../../lib/video-providers'
 
+import { filterSupportingUrls } from '../../../lib/cast-references'
+
 export async function POST(req: NextRequest) {
   try {
     const {
@@ -15,6 +17,7 @@ export async function POST(req: NextRequest) {
       nextClipIndex,
       prompts,
       imageUrl,
+      referenceImageUrls,
       beat,
       model,
       duration,
@@ -27,6 +30,7 @@ export async function POST(req: NextRequest) {
       nextClipIndex?: number
       prompts: string[]
       imageUrl: string
+      referenceImageUrls?: string[]
       beat?: { peak?: number }
       model: string
       duration: number
@@ -38,6 +42,9 @@ export async function POST(req: NextRequest) {
     const durations: number[] = Array.isArray(clipDurations) && clipDurations.length === totalClips
       ? clipDurations
       : Array.from({ length: totalClips }, () => duration)
+
+    const supportRefs = filterSupportingUrls(referenceImageUrls ?? [])
+    const supportCount = supportRefs.length
 
     const videoProvider: VideoProvider = isVideoProvider(provider) ? provider : 'seedance'
     const pollResult = await pollVideoTask(videoProvider, taskId)
@@ -58,13 +65,17 @@ export async function POST(req: NextRequest) {
           nextIndex,
           totalClips,
           nextDuration,
-          { continuesFromPriorFrame: Boolean(lastFrameUrl) }
+          {
+            continuesFromPriorFrame: Boolean(lastFrameUrl),
+            supportingRefCount: supportCount,
+          }
         )
         const nextImageUrl: string = lastFrameUrl ?? imageUrl
 
         const submitResult = await submitVideoClipWithFallback({
           prompt: nextPrompt,
           imageUrl: nextImageUrl,
+          referenceImageUrls: supportCount > 0 ? supportRefs : undefined,
           model: model === 'flipbook' ? 'seedance-2-0-fast' : model,
           duration: nextDuration,
           returnLastFrame: nextIndex < totalClips - 1,
