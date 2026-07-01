@@ -51,6 +51,8 @@ type MusicTrackPick = {
   creator?: string
   source?: string
   dropSeconds?: number
+  previewStartSeconds?: number
+  recommended?: boolean
   fallbackReason?: string
 }
 
@@ -147,6 +149,7 @@ export default function Home() {
   const [trackCandidates, setTrackCandidates] = useState<MusicTrackPick[]>([])
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(0)
   const [tracksLoading, setTracksLoading] = useState(false)
+  const [previewTrackCount, setPreviewTrackCount] = useState('8')
 
   const isFlipbook = selectedModel === 'flipbook'
   const addLog = (msg: string) => setLog(prev => [...prev, msg])
@@ -169,10 +172,11 @@ export default function Home() {
     setTracksLoading(true)
     setError(null)
     try {
+      const limit = Number(previewTrackCount) || 8
       const res = await fetch('/api/browse-music', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mood, limit: 5 }),
+        body: JSON.stringify({ mood, limit }),
       })
       const data = await res.json()
       if (data.error && !data.tracks?.length) throw new Error(data.error)
@@ -185,6 +189,23 @@ export default function Home() {
       setTrackCandidates([])
     } finally {
       setTracksLoading(false)
+    }
+  }
+
+  function playTrackPreview() {
+    const audio = previewAudioRef.current
+    if (!audio || !selectedTrack) return
+    const start = selectedTrack.previewStartSeconds
+      ?? Math.max(0, (selectedTrack.dropSeconds ?? 7) - 3)
+    const seek = () => {
+      audio.currentTime = start
+      audio.play().catch(() => {})
+    }
+    if (audio.readyState >= 1) {
+      seek()
+    } else {
+      audio.addEventListener('loadedmetadata', seek, { once: true })
+      audio.load()
     }
   }
 
@@ -787,6 +808,21 @@ export default function Home() {
                   disabled={isRunning}
                   style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 13, fontFamily: 'inherit' }}
                 />
+                <ToggleGroup
+                  label="PREVIEWS"
+                  options={[
+                    { id: '6', label: '6' },
+                    { id: '8', label: '8' },
+                    { id: '12', label: '12' },
+                  ]}
+                  value={previewTrackCount}
+                  onChange={v => {
+                    setPreviewTrackCount(v)
+                    setTrackCandidates([])
+                    setSelectedTrackIndex(0)
+                  }}
+                  disabled={isRunning || tracksLoading}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     type="button"
@@ -810,26 +846,40 @@ export default function Home() {
                       <button type="button" onClick={() => shiftTrack(1)} disabled={isRunning} style={trackNavBtnStyle}>▶</button>
                       <button
                         type="button"
-                        onClick={() => previewAudioRef.current?.play().catch(() => {})}
+                        onClick={playTrackPreview}
                         disabled={isRunning || !selectedTrack}
                         style={trackNavBtnStyle}
                       >
-                        ▶ PLAY
+                        ▶ PLAY DROP
                       </button>
                     </>
                   )}
                 </div>
                 {selectedTrack && (
                   <div style={{ fontSize: 11, color: '#666', lineHeight: 1.4 }}>
-                    <div style={{ color: '#aaa' }}>{selectedTrack.title || 'Untitled track'}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ color: '#aaa' }}>{selectedTrack.title || 'Untitled track'}</span>
+                      {selectedTrack.recommended && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, letterSpacing: '0.12em',
+                          color: '#ff3c3c', border: '1px solid #ff3c3c33',
+                          borderRadius: 2, padding: '2px 6px',
+                        }}>
+                          RECOMMENDED
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 10, color: '#444' }}>
                       {selectedTrack.creator ? `${selectedTrack.creator} · ` : ''}{selectedTrack.source}
+                      {selectedTrack.dropSeconds != null && (
+                        <> · drop ~{selectedTrack.dropSeconds}s</>
+                      )}
                     </div>
                   </div>
                 )}
                 {!trackCandidates.length && !tracksLoading && (
                   <p style={{ margin: 0, fontSize: 10, color: '#333' }}>
-                    Preview bass-drop picks before you burn video credits.
+                    Preview bass-drop picks — PLAY DROP jumps straight to the hit (within ~3s).
                   </p>
                 )}
                 <audio ref={previewAudioRef} src={selectedTrack?.audioUrl || undefined} preload="metadata" style={{ display: 'none' }} />

@@ -3,11 +3,11 @@ import { browseLibraryMusic } from '../../../lib/library-music'
 
 export async function POST(req: NextRequest) {
   try {
-    const { mood, limit = 5 } = await req.json()
+    const { mood, limit = 8 } = await req.json()
     const tracks = await browseLibraryMusic(
       mood || 'dubstep bass drop 808',
       req.nextUrl.origin,
-      Math.min(8, Math.max(1, Number(limit) || 5))
+      Math.min(12, Math.max(1, Number(limit) || 8))
     )
     return NextResponse.json({ tracks })
   } catch (err: unknown) {

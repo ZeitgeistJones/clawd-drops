@@ -23,6 +23,16 @@ const SOFT_MUSIC_TERMS = [
   'pad', 'drone', 'texture', 'evolve', 'evolving',
 ] as const
 
+const BROWSE_EXCLUDE_TERMS = [
+  'wasteland', 'wastelander', 'apocalyptic', 'desert', 'folk', 'acoustic',
+  'indie folk', 'country', 'ballad', 'singer-songwriter', 'world music',
+] as const
+
+const IDEAL_DROP_MIN = 4
+const IDEAL_DROP_MAX = 8
+const MAX_BROWSE_DROP_SEC = 25
+const PREVIEW_LEAD_SEC = 3
+
 const BRIGHT_AVOID_TERMS = [
   'future', 'bounce', 'pluck', 'melody', 'lead', 'festival', 'sparkle', 'chiptune',
   'happy', 'cheerful', 'bright', 'pop', 'heaven', 'bounce',
@@ -55,13 +65,48 @@ export type LibraryMusicResult = {
   query?: string
   fallbackReason?: string
   dropSeconds?: number
+  previewStartSeconds?: number
+  durationSeconds?: number
+  recommended?: boolean
 }
 
 type FreesoundTrack = {
   name?: string
   username?: string
   tags?: string[]
+  duration?: number
   previews?: Record<string, string>
+}
+
+function estimateDropSeconds(title: string, tags: string, durationSec?: number): number {
+  const text = `${title} ${tags}`.toLowerCase()
+  if (/\bdrop\b/.test(text) && durationSec != null && durationSec <= 30) {
+    return Math.min(10, Math.max(IDEAL_DROP_MIN, Math.round(durationSec * 0.35)))
+  }
+  if (/\b(loop|loops)\b/.test(text) && durationSec != null) {
+    return Math.min(12, Math.max(IDEAL_DROP_MIN, Math.round(durationSec * 0.25)))
+  }
+  if (/\b(dubstep|trap|808|bassdrop|bass-drop|brostep|wobble)\b/.test(text)) return 6
+  if (durationSec != null && durationSec <= 45) {
+    return Math.min(10, Math.max(IDEAL_DROP_MIN, Math.round(durationSec * 0.3)))
+  }
+  if (durationSec != null && durationSec <= 120) {
+    return Math.min(12, Math.round(durationSec * 0.15))
+  }
+  return 7
+}
+
+function previewStartFromDrop(dropSeconds: number): number {
+  return Math.max(0, dropSeconds - PREVIEW_LEAD_SEC)
+}
+
+function scoreEarlyDrop(dropSeconds: number): number {
+  if (dropSeconds >= IDEAL_DROP_MIN && dropSeconds <= IDEAL_DROP_MAX) return 25
+  if (dropSeconds <= 10) return 15
+  if (dropSeconds <= 12) return 8
+  if (dropSeconds <= 18) return 0
+  if (dropSeconds <= 25) return -8
+  return -20
 }
 
 type FreesoundSearchOpts = {
@@ -93,6 +138,7 @@ function isExcludedFreesoundTrack(track: FreesoundTrack, dropIntent: boolean): b
   const haystacks = [track.name || '', ...(track.tags || [])]
   for (const text of haystacks) {
     if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
+    if (textContainsTerm(text, BROWSE_EXCLUDE_TERMS)) return true
     if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
   }
   return false
@@ -192,7 +238,7 @@ function pickTopFreesoundTracks(
   strictScoring: boolean,
   limit: number
 ) {
-  const ranked: { audioUrl: string; title?: string; creator?: string; score: number }[] = []
+  const ranked: ScoredCandidate[] = []
 
   for (const track of results) {
     const score = scoreFreesoundTrack(track, dropIntent)
@@ -203,7 +249,20 @@ function pickTopFreesoundTracks(
 
     if (dropIntent && strictScoring && score === 0) continue
 
-    ranked.push({ audioUrl, title: track.name, creator: track.username, score })
+    const tags = (track.tags || []).join(' ')
+    const durationSeconds = typeof track.duration === 'number' ? track.duration : undefined
+    const dropSeconds = estimateDropSeconds(track.name || '', tags, durationSeconds)
+    if (dropSeconds > MAX_BROWSE_DROP_SEC) continue
+
+    ranked.push({
+      audioUrl,
+      title: track.name,
+      creator: track.username,
+      source: 'freesound',
+      durationSeconds,
+      dropSeconds,
+      score: score + scoreEarlyDrop(dropSeconds),
+    })
   }
 
   ranked.sort((a, b) => b.score - a.score)
@@ -278,6 +337,7 @@ async function searchFreesound(query: string, opts: FreesoundSearchOpts) {
 function isExcludedJamendoTrack(track: { name?: string; tags?: string }, dropIntent: boolean): boolean {
   const text = `${track.name || ''} ${typeof track.tags === 'string' ? track.tags : ''}`.toLowerCase()
   if (textContainsTerm(text, FREESOUND_POST_FILTER_EXCLUDE)) return true
+  if (textContainsTerm(text, BROWSE_EXCLUDE_TERMS)) return true
   if (dropIntent && textContainsTerm(text, SOFT_MUSIC_TERMS)) return true
   return false
 }
@@ -292,7 +352,7 @@ async function listJamendoCandidates(
   tokens: string[],
   dropIntent: boolean,
   limit: number
-): Promise<LibraryMusicResult[]> {
+): Promise<ScoredCandidate[]> {
   const clientId = process.env.JAMENDO_CLIENT_ID
   if (!clientId) return []
 
@@ -300,7 +360,7 @@ async function listJamendoCandidates(
   const url = new URL('https://api.jamendo.com/v3.0/tracks/')
   url.searchParams.set('client_id', clientId)
   url.searchParams.set('format', 'json')
-  url.searchParams.set('limit', '20')
+  url.searchParams.set('limit', '30')
   url.searchParams.set('tags', jamendoTags.join('+'))
   url.searchParams.set('vocalinstrumental', 'instrumental')
   url.searchParams.set('order', 'relevance_desc')
@@ -310,24 +370,30 @@ async function listJamendoCandidates(
 
   const data = await res.json()
   const results = data.results || []
-  const ranked: (LibraryMusicResult & { score: number })[] = []
+  const ranked: ScoredCandidate[] = []
 
   for (const track of results) {
     const score = scoreJamendoTrack(track, dropIntent)
     if (score < 0) continue
     const audioUrl = track.audio || track.audiodownload
     if (!audioUrl) continue
+    const durationSeconds = typeof track.duration === 'number' ? track.duration : undefined
+    const tags = typeof track.tags === 'string' ? track.tags : ''
+    const dropSeconds = estimateDropSeconds(track.name || '', tags, durationSeconds)
+    if (dropSeconds > MAX_BROWSE_DROP_SEC) continue
     ranked.push({
       audioUrl,
       title: track.name,
       creator: track.artist_name,
       source: 'jamendo',
-      score,
+      durationSeconds,
+      dropSeconds,
+      score: score + scoreEarlyDrop(dropSeconds),
     })
   }
 
   ranked.sort((a, b) => b.score - a.score)
-  return ranked.slice(0, limit).map(({ score: _score, ...rest }) => rest)
+  return ranked.slice(0, limit)
 }
 
 async function searchJamendo(tokens: string[], dropIntent: boolean, strictScoring: boolean) {
@@ -511,61 +577,87 @@ function mergeCandidates(existing: ScoredCandidate[], incoming: ScoredCandidate[
   return Array.from(byUrl.values()).sort((a, b) => b.score - a.score)
 }
 
+function finalizeBrowseResults(candidates: ScoredCandidate[], limit: number): LibraryMusicResult[] {
+  const enriched = candidates.map(c => {
+    const dropSeconds = c.dropSeconds ?? estimateDropSeconds(
+      c.title || '',
+      c.query || '',
+      c.durationSeconds
+    )
+    const previewStartSeconds = previewStartFromDrop(dropSeconds)
+    const earlyBonus = c.dropSeconds == null ? scoreEarlyDrop(dropSeconds) : 0
+    return {
+      ...c,
+      dropSeconds,
+      previewStartSeconds,
+      score: c.score + earlyBonus,
+    }
+  })
+
+  const filtered = enriched.filter(c => (c.dropSeconds ?? 99) <= MAX_BROWSE_DROP_SEC && c.score > -10)
+  filtered.sort((a, b) => b.score - a.score)
+  const top = filtered.slice(0, limit)
+  const topScore = top[0]?.score ?? 0
+
+  return top.map((c, i) => {
+    const { score: _score, ...rest } = c
+    return {
+      ...rest,
+      recommended: i < 2 && c.score >= topScore - 4,
+    }
+  })
+}
+
 export async function browseLibraryMusic(
   mood: string,
   siteOrigin?: string,
-  limit = 5
+  limit = 8
 ): Promise<LibraryMusicResult[]> {
   const tokens = extractMoodTokens(mood || 'dubstep bass drop 808')
   const dropIntent = hasDropIntent(mood, tokens) || true
   const queries = buildFreesoundQueries(tokens, dropIntent)
+  const fetchLimit = Math.max(limit * 2, 16)
   let merged: ScoredCandidate[] = []
 
-  const jamendo = await listJamendoCandidates(tokens, dropIntent, limit * 2)
-  merged = mergeCandidates(merged, jamendo.map((track, i) => ({
-    ...track,
-    score: limit * 2 - i,
-  })))
+  for (const track of CURATED_FALLBACK_TRACKS) {
+    const curated = await resolveCuratedFallback(track.tags.join(' '), true, siteOrigin)
+    const moodScore = scoreTrackText(`${mood} ${track.tags.join(' ')}`, true)
+    merged = mergeCandidates(merged, [{
+      audioUrl: curated.audioUrl,
+      title: curated.title,
+      creator: curated.creator,
+      source: 'fallback',
+      dropSeconds: track.dropSeconds,
+      fallbackReason: curated.fallbackReason,
+      score: moodScore + scoreEarlyDrop(track.dropSeconds) + (track.id.includes('dubstep') ? 8 : 0),
+    }])
+  }
+
+  const jamendo = await listJamendoCandidates(tokens, dropIntent, fetchLimit)
+  merged = mergeCandidates(merged, jamendo)
 
   const fsOpts = { ...RELAXED_FS, dropIntent: true as const }
-  for (const query of queries.slice(0, 3)) {
+  for (const query of queries) {
     try {
       const results = await fetchFreesoundResults(query, fsOpts)
       if (!results?.length) continue
-      const top = pickTopFreesoundTracks(results, dropIntent, false, limit)
-      merged = mergeCandidates(merged, top.map((track, i) => ({
-        audioUrl: track.audioUrl,
-        title: track.title,
-        creator: track.creator,
-        source: 'freesound' as const,
-        query,
-        score: track.score + (limit - i),
-      })))
+      const top = pickTopFreesoundTracks(results, dropIntent, false, Math.ceil(fetchLimit / 2))
+      merged = mergeCandidates(merged, top.map(track => ({ ...track, query })))
     } catch {
       // continue
     }
   }
 
-  if (merged.length < limit) {
-    for (const track of CURATED_FALLBACK_TRACKS) {
-      if (merged.length >= limit * 2) break
-      const curated = await resolveCuratedFallback(track.tags.join(' '), true, siteOrigin)
-      merged = mergeCandidates(merged, [{
-        audioUrl: curated.audioUrl,
-        title: curated.title,
-        creator: curated.creator,
-        source: 'fallback',
-        dropSeconds: curated.dropSeconds,
-        fallbackReason: curated.fallbackReason,
-        score: scoreTrackText(track.tags.join(' '), true) + (track.id.includes('dubstep') ? 10 : 0),
-      }])
-    }
-  }
-
   if (merged.length === 0) {
     const single = await searchLibraryMusic(mood, siteOrigin)
-    return [single]
+    const dropSeconds = single.dropSeconds ?? estimateDropSeconds(single.title || '', mood)
+    return [{
+      ...single,
+      dropSeconds,
+      previewStartSeconds: previewStartFromDrop(dropSeconds),
+      recommended: true,
+    }]
   }
 
-  return merged.slice(0, limit).map(({ score: _score, ...rest }) => rest)
+  return finalizeBrowseResults(merged, limit)
 }
