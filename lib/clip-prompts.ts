@@ -8,28 +8,42 @@ const DEFAULT_STYLE =
   'sharp anime style, cel shaded, high contrast, dramatic lighting'
 
 const SECTION_HEADER =
-  /^(BUILD|DROP|ESCALATION|MIDDLE(?:\s+CLIP)?|CLIP\s*(\d+)|STYLE)\s*(?:\([^)]*\))?\s*:\s*(.*)$/i
+  /^(BUILD(?:\s*→\s*DROP)?|DROP|ESCALATION|MIDDLE(?:\s+CLIP)?|CLIP\s*(\d+)|STYLE)\s*(?:\([^)]*\))?\s*:\s*(.*)$/i
 
 function normalizeLabel(label: string): string {
   return label.toUpperCase().replace(/\s+/g, ' ')
 }
 
+function mergeSingleClipSections(buildPart: string, dropPart: string): string {
+  const build = buildPart.trim()
+  const drop = dropPart.trim()
+  if (build && drop) {
+    return `BUILD phase: ${build} Then DROP phase: ${drop}`
+  }
+  return build || drop
+}
+
 export function parseStructuredGoal(goal: string, clipCount: number): ParsedStructuredGoal {
   const clips = Array.from({ length: clipCount }, () => '')
   let style: string | undefined
-  let currentKey: 'style' | number | null = null
+  let currentKey: 'style' | 'build' | 'drop' | number | null = null
   const buffer: string[] = []
+  let singleBuild = ''
+  let singleDrop = ''
 
   const flush = () => {
+    const text = buffer.join('\n').trim()
     if (currentKey === 'style') {
-      const text = buffer.join('\n').trim()
       if (text) style = text
+    } else if (clipCount === 1 && currentKey === 'build') {
+      if (text) singleBuild = text
+    } else if (clipCount === 1 && currentKey === 'drop') {
+      if (text) singleDrop = text
     } else if (
       typeof currentKey === 'number'
       && currentKey >= 0
       && currentKey < clipCount
     ) {
-      const text = buffer.join('\n').trim()
       if (text) clips[currentKey] = text
     }
     buffer.length = 0
@@ -45,11 +59,19 @@ export function parseStructuredGoal(goal: string, clipCount: number): ParsedStru
       if (label === 'STYLE') {
         currentKey = 'style'
         if (inline) buffer.push(inline)
-      } else if (label === 'BUILD') {
-        currentKey = 0
+      } else if (label === 'BUILD' || label.startsWith('BUILD→DROP') || label.startsWith('BUILD->DROP')) {
+        if (clipCount === 1) {
+          currentKey = 'build'
+        } else {
+          currentKey = 0
+        }
         if (inline) buffer.push(inline)
       } else if (label === 'DROP') {
-        currentKey = clipCount - 1
+        if (clipCount === 1) {
+          currentKey = 'drop'
+        } else {
+          currentKey = clipCount - 1
+        }
         if (inline) buffer.push(inline)
       } else if (label.startsWith('CLIP')) {
         const clipNum = parseInt(match[2], 10)
@@ -67,13 +89,18 @@ export function parseStructuredGoal(goal: string, clipCount: number): ParsedStru
   }
   flush()
 
+  if (clipCount === 1) {
+    clips[0] = mergeSingleClipSections(singleBuild, singleDrop)
+  }
+
   const filledCount = clips.filter(Boolean).length
   const hasBuildDrop = clipCount >= 2 && Boolean(clips[0] && clips[clipCount - 1])
+  const hasSingleArc = clipCount === 1 && Boolean(clips[0])
 
   return {
     style,
     clips,
-    structured: filledCount >= clipCount || (clipCount === 2 && hasBuildDrop),
+    structured: filledCount >= clipCount || hasBuildDrop || hasSingleArc,
   }
 }
 
@@ -92,10 +119,9 @@ export function buildStructuredClipPrompts(
     const body = parsed.clips[i]?.trim()
     if (!body) continue
 
-    const role =
-      i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `ESCALATION ${i}`
+    const role = clipRoleLabel(i, clipCount)
     result[`seedance${i + 1}`] =
-      `${body} (${duration}s ${role.toLowerCase()} clip — @Image1 is Clawd, same character throughout)`
+      `${body} (${duration}s ${role.toLowerCase()} — @Image1 is Clawd, same character throughout)`
   }
 
   return result
@@ -106,6 +132,11 @@ export function clipDurationNote(
   totalClips: number,
   durationSeconds: number
 ): string {
+  if (totalClips === 1) {
+    const buildSec = Math.max(2, Math.round(durationSeconds * 0.6))
+    const dropSec = Math.max(2, durationSeconds - buildSec)
+    return `${durationSeconds}s one-shot — first ~${buildSec}s slow BUILD (tension rising), final ~${dropSec}s explosive DROP on the beat.`
+  }
   if (clipIndex === 0) {
     return `${durationSeconds}s clip — slow atmospheric BUILD, tension rising, end on anticipation.`
   }
@@ -130,6 +161,10 @@ export function wrapVideoClipPrompt(
 
   const timing = clipDurationNote(clipIndex, totalClips, durationSeconds)
 
+  if (totalClips === 1) {
+    return `${base} ${timing}`
+  }
+
   if (clipIndex === 0) {
     return `${base} ${timing}`
   }
@@ -146,6 +181,7 @@ export function wrapVideoClipPrompt(
 }
 
 export function clipRoleLabel(clipIndex: number, totalClips: number): string {
+  if (totalClips === 1) return 'BUILD → DROP'
   if (clipIndex === 0) return 'BUILD'
   if (clipIndex === totalClips - 1) return 'DROP'
   return `ESCALATION ${clipIndex}`

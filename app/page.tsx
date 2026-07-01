@@ -2,6 +2,13 @@
 
 import { useState, useRef } from 'react'
 import type { BeatAnalysisResult } from '../lib/beat-analysis'
+import { clipRoleLabel } from '../lib/clip-prompts'
+import {
+  effectiveDuration,
+  isBackupVideoProvider,
+  PROVIDER_LABELS,
+  type VideoProvider,
+} from '../lib/video-providers'
 
 const STAGES = {
   IDLE: 'idle',
@@ -45,6 +52,13 @@ const DURATIONS = [4, 5, 6, 8, 10]
 const POSE_COUNTS = [2, 3, 4, 5, 6]
 const CLAWD_DEFAULT = 'https://raw.githubusercontent.com/ZeitgeistJones/clawd-drops/main/clawd.png'
 
+type ReviewClipItem = {
+  url: string
+  provider: string
+  requestedDuration: number
+  actualDuration?: number
+}
+
 type PendingSyncPayload = {
   mode: 'video' | 'flipbook'
   musicData: { audioUrl: string; title?: string }
@@ -58,6 +72,16 @@ type ReviewContext = {
   videoModel: string
   videoProvider: string
   flipbookStyle: string
+  clipLastFrames: (string | null)[]
+  clipProviders: string[]
+  totalClips: number
+}
+
+function providerLabel(provider: string): string {
+  if (provider in PROVIDER_LABELS) {
+    return PROVIDER_LABELS[provider as VideoProvider]
+  }
+  return provider
 }
 
 type MusicMode = 'ai' | 'my-song' | 'find-song'
@@ -168,7 +192,7 @@ export default function Home() {
   const [previewTrackCount, setPreviewTrackCount] = useState('8')
   const [trackViewMode, setTrackViewMode] = useState<'list' | 'carousel'>('list')
   const [reviewBeforeSync, setReviewBeforeSync] = useState(true)
-  const [reviewClips, setReviewClips] = useState<string[]>([])
+  const [reviewClips, setReviewClips] = useState<ReviewClipItem[]>([])
   const [reviewFrames, setReviewFrames] = useState<string[]>([])
   const [flaggedClips, setFlaggedClips] = useState<number[]>([])
   const [flaggedFrames, setFlaggedFrames] = useState<number[]>([])
@@ -191,6 +215,25 @@ export default function Home() {
     && !isReviewing
 
   const selectedTrack = trackCandidates[selectedTrackIndex] ?? null
+
+  function clearPipelinePreviewState() {
+    setPrompts(null)
+    setBeatData(null)
+    setReviewClips([])
+    setReviewFrames([])
+    setFlaggedClips([])
+    setFlaggedFrames([])
+    setPendingSync(null)
+    setReviewContext(null)
+    setVideoUrl(null)
+    setStyledPreview(null)
+  }
+
+  function updateReviewClipDuration(index: number, actualDuration: number) {
+    setReviewClips(prev => prev.map((clip, i) => (
+      i === index ? { ...clip, actualDuration } : clip
+    )))
+  }
 
   async function browseTracks() {
     const mood = vibeDescription.trim() || goal.trim()
@@ -251,40 +294,9 @@ export default function Home() {
     playTrackAtIndex(selectedTrackIndex)
   }
 
-  async function pollSingleClip(
-    taskId: string,
-    provider: string,
-    clipDuration: number
-  ): Promise<string> {
-    for (let i = 0; i < 80; i++) {
-      await new Promise(r => setTimeout(r, 10000))
-      const pollRes = await fetch('/api/poll-video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          taskId,
-          completedClips: [],
-          prompts: ['regen'],
-          imageUrl: reviewContext?.styledImageUrl || CLAWD_DEFAULT,
-          model: reviewContext?.videoModel || selectedModel,
-          duration: clipDuration,
-          totalClips: 1,
-          provider,
-        }),
-      })
-      const pollData = await pollRes.json()
-      if (pollData.error) throw new Error(pollData.error)
-      if (pollData.status === 'completed' && pollData.completedClips?.[0]) {
-        return pollData.completedClips[0]
-      }
-      addLog(`Regen: ${pollData.status || 'processing'}...`)
-    }
-    throw new Error('Clip regeneration timed out')
-  }
-
   function enterReview(
     mode: 'video' | 'flipbook',
-    assets: string[],
+    assets: ReviewClipItem[] | string[],
     syncPayload: PendingSyncPayload,
     ctx: ReviewContext
   ) {
@@ -293,10 +305,19 @@ export default function Home() {
     setFlaggedClips([])
     setFlaggedFrames([])
     if (mode === 'video') {
-      setReviewClips(assets)
+      const items: ReviewClipItem[] = assets.map((a, i) => (
+        typeof a === 'string'
+          ? {
+              url: a,
+              provider: ctx.clipProviders[i] ?? ctx.videoProvider,
+              requestedDuration: syncPayload.clipDurations[i] ?? 8,
+            }
+          : a
+      ))
+      setReviewClips(items)
       setReviewFrames([])
     } else {
-      setReviewFrames(assets)
+      setReviewFrames(assets as string[])
       setReviewClips([])
     }
     setStage(STAGES.REVIEWING)
@@ -316,7 +337,7 @@ export default function Home() {
     }
     try {
       if (pendingSync.mode === 'video') {
-        await syncToManus({ ...pendingSync, clips: reviewClips })
+        await syncToManus({ ...pendingSync, clips: reviewClips.map(c => c.url) })
       } else {
         await syncToManus({ ...pendingSync, frames: reviewFrames })
       }
@@ -333,28 +354,55 @@ export default function Home() {
     try {
       addLog(`Regenerating clip ${index + 1}...`)
       const clipDuration = pendingSync.clipDurations[index] ?? 8
-      const res = await fetch('/api/generate-video', {
+      const priorFrame = index > 0 ? reviewContext.clipLastFrames[index - 1] : null
+      const referenceImageUrl = index === 0
+        ? reviewContext.styledImageUrl
+        : priorFrame ?? reviewContext.styledImageUrl
+
+      if (index > 0 && !priorFrame) {
+        addLog('No last-frame from kept clip — using styled character (continuity may vary).')
+      }
+
+      const res = await fetch('/api/regenerate-clip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompts: [reviewContext.clipPrompts[index]],
-          imageUrl: reviewContext.styledImageUrl,
-          beat: pendingSync.audioData,
+          clipIndex: index,
+          prompt: reviewContext.clipPrompts[index],
+          referenceImageUrl,
           model: reviewContext.videoModel,
           duration: clipDuration,
-          clipDurations: [clipDuration],
+          totalClips: reviewContext.totalClips,
+          continuesFromPriorFrame: index > 0 && Boolean(priorFrame),
         }),
       })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
-      const url = await pollSingleClip(data.taskId1, data.provider ?? 'seedance', clipDuration)
+
+      const provider = data.provider ?? 'seedance'
       setReviewClips(prev => {
         const next = [...prev]
-        next[index] = url
+        next[index] = {
+          url: data.videoUrl,
+          provider,
+          requestedDuration: clipDuration,
+          actualDuration: undefined,
+        }
         return next
       })
+      setReviewContext(prev => {
+        if (!prev) return prev
+        const clipLastFrames = [...prev.clipLastFrames]
+        const clipProviders = [...prev.clipProviders]
+        clipLastFrames[index] = data.lastFrameUrl ?? null
+        clipProviders[index] = provider
+        return { ...prev, clipLastFrames, clipProviders }
+      })
       setFlaggedClips(prev => prev.filter(i => i !== index))
-      addLog(`Clip ${index + 1} regenerated.`)
+      addLog(`Clip ${index + 1} regenerated (${providerLabel(provider)}, ${clipDuration}s requested).`)
+      if (index < reviewContext.totalClips - 1) {
+        addLog(`Tip: clip ${index + 2} may not match — consider redoing it too if continuity looks off.`)
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Clip regen failed')
     } finally {
@@ -547,8 +595,7 @@ export default function Home() {
         for (let i = 0; i < clipCount; i++) {
           const text = promptData[`seedance${i + 1}`]
           if (!text) continue
-          const label = i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`
-          addLog(`  ${label}: ${String(text).slice(0, 120)}${String(text).length > 120 ? '…' : ''}`)
+          addLog(`  ${clipRoleLabel(i, clipCount)}: ${String(text).slice(0, 120)}${String(text).length > 120 ? '…' : ''}`)
         }
       }
 
@@ -692,6 +739,9 @@ export default function Home() {
           videoModel: selectedModel,
           videoProvider: 'seedance',
           flipbookStyle: style,
+          clipLastFrames: [],
+          clipProviders: [],
+          totalClips: 0,
         }
         if (reviewBeforeSync) {
           enterReview('flipbook', completedFrames, syncPayload, reviewCtx)
@@ -708,8 +758,8 @@ export default function Home() {
       }
 
       setStage(STAGES.GENERATING_VIDEO)
-      addLog(`~${estMinutes} min estimated for ${clipCount} clips...`)
-      addLog('Generating clip 1 — the build...')
+      addLog(`~${estMinutes} min estimated for ${clipCount} clip${clipCount === 1 ? '' : 's'}...`)
+      addLog(`Generating clip 1 — ${clipRoleLabel(0, clipCount).toLowerCase()}...`)
 
       const clipPrompts = Array.from({ length: clipCount }, (_, i) => promptData[`seedance${i + 1}`]).filter(Boolean)
 
@@ -737,6 +787,10 @@ export default function Home() {
       let currentTaskId = videoJobData.taskId1
       let nextClipIndex = 1
       let videoProvider = videoJobData.provider ?? 'seedance'
+      const clipLastFrames: (string | null)[] = []
+      const clipProvidersList: string[] = []
+
+      addLog(`Clip 1 started (${providerLabel(videoProvider)}, ${clipDurations[0]}s requested).`)
 
       for (let i = 0; i < 80; i++) {
         await new Promise(r => setTimeout(r, 10000))
@@ -761,16 +815,31 @@ export default function Home() {
 
         if (pollData.status?.includes('_done')) {
           completedClips = pollData.completedClips
+          const finishedIndex = completedClips.length - 1
+          clipLastFrames[finishedIndex] = pollData.lastFrameUrl ?? null
+          clipProvidersList[finishedIndex] = pollData.clipProvider ?? videoProvider
+          addLog(
+            `Clip ${completedClips.length} ready (${providerLabel(clipProvidersList[finishedIndex])}, ${clipDurations[finishedIndex]}s requested). Generating clip ${completedClips.length + 1}...`
+          )
           currentTaskId = pollData.nextTaskId
           nextClipIndex = pollData.nextClipIndex
           videoProvider = pollData.provider ?? videoProvider
-          addLog(`Clip ${completedClips.length} ready. Generating clip ${completedClips.length + 1}...`)
           continue
         }
 
         if (pollData.status === 'completed') {
           completedClips = pollData.completedClips
-          addLog(`All ${clipCount} clips ready.`)
+          const finishedIndex = completedClips.length - 1
+          if (finishedIndex >= 0) {
+            clipLastFrames[finishedIndex] = pollData.lastFrameUrl ?? clipLastFrames[finishedIndex] ?? null
+            clipProvidersList[finishedIndex] = pollData.clipProvider ?? videoProvider
+          }
+          addLog(`All ${clipCount} clip${clipCount === 1 ? '' : 's'} ready.`)
+          const reviewItems: ReviewClipItem[] = completedClips.map((url, idx) => ({
+            url,
+            provider: clipProvidersList[idx] ?? videoProvider,
+            requestedDuration: clipDurations[idx] ?? clipDurations[0],
+          }))
           const syncPayload: PendingSyncPayload = {
             mode: 'video',
             musicData,
@@ -783,9 +852,12 @@ export default function Home() {
             videoModel: selectedModel,
             videoProvider,
             flipbookStyle: promptData.style || 'sharp anime style',
+            clipLastFrames,
+            clipProviders: clipProvidersList,
+            totalClips: clipCount,
           }
           if (reviewBeforeSync) {
-            enterReview('video', completedClips, syncPayload, reviewCtx)
+            enterReview('video', reviewItems, syncPayload, reviewCtx)
             return
           }
           await syncToManus({
@@ -813,8 +885,10 @@ export default function Home() {
     ? Array.from({ length: poseCount }, (_, i) => ({ key: `flipbook${i + 1}`, label: `FRAME ${i + 1}` }))
     : Array.from({ length: clipCount }, (_, i) => ({
         key: `seedance${i + 1}`,
-        label: i === 0 ? 'BUILD' : i === clipCount - 1 ? 'DROP' : `CLIP ${i + 1}`,
+        label: clipRoleLabel(i, clipCount),
       }))
+
+  const reviewUsesBackupProvider = reviewClips.some(c => isBackupVideoProvider(c.provider))
 
   return (
     <div style={{
@@ -887,7 +961,10 @@ export default function Home() {
             label="Clips"
             options={[1, 2, 3].map(n => ({ id: String(n), label: String(n) }))}
             value={String(clipCount)}
-            onChange={v => setClipCount(Number(v))}
+            onChange={v => {
+              setClipCount(Number(v))
+              clearPipelinePreviewState()
+            }}
             disabled={isRunning}
           />
         )}
@@ -917,13 +994,18 @@ export default function Home() {
             />
           </>
         ) : (
-          <ToggleGroup
-            label="Length"
-            options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
-            value={String(duration)}
-            onChange={v => setDuration(Number(v))}
-            disabled={isRunning}
-          />
+          <>
+            <ToggleGroup
+              label="Length"
+              options={DURATIONS.map(d => ({ id: String(d), label: `${d}s` }))}
+              value={String(duration)}
+              onChange={v => setDuration(Number(v))}
+              disabled={isRunning}
+            />
+            <div style={{ paddingLeft: 72, fontSize: 10, color: '#333', letterSpacing: '0.06em', lineHeight: 1.4 }}>
+              One clip — build ramps early, drop lands on the beat inside this length.
+            </div>
+          </>
         )}
         <ToggleGroup
           label="Review"
@@ -954,11 +1036,13 @@ export default function Home() {
             placeholder={
               !isFlipbook && clipCount >= 2
                 ? 'BUILD (clip 1): slow walk, smoke, tension...\nDROP (clip 2): shockwave, arms up, epic hit...\nSTYLE: dark cyberpunk'
-                : musicMode === 'find-song'
-                  ? 'describe the scene and character energy...'
-                  : 'clawd grinding on a build, late night, hypnotic vibe'
+                : !isFlipbook && clipCount === 1
+                  ? 'BUILD→DROP: slow tension, smoke building… then explosive bass-hit shockwave…\nSTYLE: dark cyberpunk'
+                  : musicMode === 'find-song'
+                    ? 'describe the scene and character energy...'
+                    : 'clawd grinding on a build, late night, hypnotic vibe'
             }
-            rows={!isFlipbook && clipCount >= 2 ? 5 : 3}
+            rows={!isFlipbook && clipCount >= 2 ? 5 : !isFlipbook && clipCount === 1 ? 4 : 3}
             style={{
               width: '100%', background: 'transparent', border: 'none', outline: 'none',
               color: '#fff', fontSize: 15, lineHeight: 1.6, padding: '18px 18px 14px',
@@ -1322,6 +1406,14 @@ export default function Home() {
           <p style={{ fontSize: 11, color: '#444', margin: '0 0 16px 0', lineHeight: 1.5 }}>
             Flag anything that looks wrong, redo it, then sync. Saves Manus credits on bad outputs.
           </p>
+          {reviewUsesBackupProvider && pendingSync.mode === 'video' && (
+            <p style={{
+              fontSize: 10, color: '#888', margin: '0 0 12px 0', padding: '8px 10px',
+              border: '1px solid #333', borderRadius: 3, lineHeight: 1.5,
+            }}>
+              Backup provider in use — max 8s per clip; 10s requires Seedance credits.
+            </p>
+          )}
           <div style={{
             display: 'grid',
             gridTemplateColumns: pendingSync.mode === 'flipbook'
@@ -1330,20 +1422,42 @@ export default function Home() {
             gap: 10,
             marginBottom: 16,
           }}>
-            {pendingSync.mode === 'video' && reviewClips.map((url, i) => {
-              const label = i === 0 ? 'BUILD' : i === reviewClips.length - 1 ? 'DROP' : `CLIP ${i + 1}`
+            {pendingSync.mode === 'video' && reviewClips.map((clip, i) => {
+              const label = clipRoleLabel(i, reviewClips.length)
               const flagged = flaggedClips.includes(i)
+              const effective = effectiveDuration(
+                clip.requestedDuration,
+                (clip.provider in PROVIDER_LABELS ? clip.provider : 'seedance') as VideoProvider
+              )
+              const gotLabel = clip.actualDuration != null
+                ? `${clip.actualDuration.toFixed(1)}s`
+                : '…'
               return (
-                <div key={url + i} style={{
+                <div key={clip.url + i} style={{
                   background: '#080810',
                   border: `1px solid ${flagged ? '#ff3c3c55' : '#1a1a1a'}`,
                   borderRadius: 4,
                   padding: 10,
                 }}>
-                  <div style={{ fontSize: 9, letterSpacing: '0.15em', color: flagged ? '#ff3c3c' : '#666', fontWeight: 700, marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.15em', color: flagged ? '#ff3c3c' : '#666', fontWeight: 700, marginBottom: 4 }}>
                     {label}{flagged ? ' · FLAGGED' : ''}
                   </div>
-                  <video src={url} controls style={{ width: '100%', borderRadius: 3, background: '#000', marginBottom: 8 }} />
+                  <div style={{ fontSize: 9, color: '#444', marginBottom: 8 }}>
+                    {providerLabel(clip.provider)} · asked {clip.requestedDuration}s
+                    {isBackupVideoProvider(clip.provider) && effective !== clip.requestedDuration
+                      ? ` (cap ${effective}s)`
+                      : ''}
+                    {' · got '}{gotLabel}
+                  </div>
+                  <video
+                    src={clip.url}
+                    controls
+                    style={{ width: '100%', borderRadius: 3, background: '#000', marginBottom: 8 }}
+                    onLoadedMetadata={e => {
+                      const dur = e.currentTarget.duration
+                      if (Number.isFinite(dur) && dur > 0) updateReviewClipDuration(i, dur)
+                    }}
+                  />
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <button
                       type="button"

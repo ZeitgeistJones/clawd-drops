@@ -82,10 +82,17 @@ export async function POST(req: NextRequest) {
           nextTaskId: submitResult.taskId,
           nextClipIndex: nextIndex + 1,
           provider: submitResult.provider,
+          lastFrameUrl: lastFrameUrl ?? null,
+          clipProvider: videoProvider,
         })
       }
 
-      return NextResponse.json({ status: 'completed', completedClips: newCompletedClips, provider: videoProvider })
+      return NextResponse.json({
+        status: 'completed',
+        completedClips: newCompletedClips,
+        provider: videoProvider,
+        lastFrameUrl: lastFrameUrl ?? null,
+      })
     }
 
     if (status === 'failed') {

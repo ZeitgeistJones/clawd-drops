@@ -90,6 +90,16 @@ function deapiFrames(duration: number): number {
   return duration <= 5 ? 121 : 193
 }
 
+export function effectiveDuration(requested: number, provider: VideoProvider): number {
+  if (provider === 'seedance') return requested
+  if (provider === 'deapi') return requested <= 5 ? 5 : 8
+  return requested <= 5 ? 5 : 8
+}
+
+export function isBackupVideoProvider(provider: string): boolean {
+  return provider !== 'seedance'
+}
+
 function getProviderApiKey(provider: VideoProvider): string | undefined {
   const value = process.env[PROVIDER_ENV_KEYS[provider]]
   return value?.trim() || undefined

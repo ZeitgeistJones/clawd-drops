@@ -55,16 +55,21 @@ export async function POST(req: NextRequest) {
         return `- "flipbook${n}": Escalation pose ${n} — emotional beat in the arc (leaning forward, reacting, decisive action).`
       }).join('\n')
     } else {
-      promptKeys = Array.from({ length: count }, (_, i) => {
-        const seconds = clipDurations[i] ?? 8
-        if (i === 0) {
-          return `- "seedance1": Clip 1 — THE BUILD (${seconds}s). Slow, tense, atmospheric. Subtle character action, moody lighting, slow camera. End with tension building. Do NOT include drop or explosion yet.`
-        }
-        if (i === count - 1) {
-          return `- "seedance${i + 1}": Clip ${i + 1} — THE DROP (${seconds}s). Explosive payoff on the beat. Dynamic camera, decisive action, dramatic lighting shift, peak energy. Same location and character as clip 1.`
-        }
-        return `- "seedance${i + 1}": Clip ${i + 1} — ESCALATION (${seconds}s). Energy rising between build and drop. More movement, increasing intensity. Same location and character.`
-      }).join('\n')
+      if (count === 1) {
+        const seconds = clipDurations[0] ?? 8
+        promptKeys = `- "seedance1": One combined BUILD→DROP scene (${seconds}s total). First ~60% slow tense build (atmospheric, rising tension). Final ~40% explosive DROP on the beat (dynamic camera, peak energy, dramatic lighting shift). Same location and character throughout. Do NOT split into two separate clips.`
+      } else {
+        promptKeys = Array.from({ length: count }, (_, i) => {
+          const seconds = clipDurations[i] ?? 8
+          if (i === 0) {
+            return `- "seedance1": Clip 1 — THE BUILD (${seconds}s). Slow, tense, atmospheric. Subtle character action, moody lighting, slow camera. End with tension building. Do NOT include drop or explosion yet.`
+          }
+          if (i === count - 1) {
+            return `- "seedance${i + 1}": Clip ${i + 1} — THE DROP (${seconds}s). Explosive payoff on the beat. Dynamic camera, decisive action, dramatic lighting shift, peak energy. Same location and character as clip 1.`
+          }
+          return `- "seedance${i + 1}": Clip ${i + 1} — ESCALATION (${seconds}s). Energy rising between build and drop. More movement, increasing intensity. Same location and character.`
+        }).join('\n')
+      }
     }
 
     const modeInstructions = isFlipbook
